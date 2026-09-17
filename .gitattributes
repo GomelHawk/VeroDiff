@@ -1,0 +1,5 @@
+# VeroDiff is bash end to end, and a shell script with CRLF line endings dies on Linux
+# and WSL with "bad interpreter: /usr/bin/env bash^M". core.autocrlf=true is the default
+# on Windows installs of git, so pin the endings here rather than trusting every clone's
+# local config.
+* text=auto eol=lf

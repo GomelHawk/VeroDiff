@@ -1,0 +1,17 @@
+{
+  "name": "verodiff-marketplace",
+  "description": "Per-turn diffs for Claude Code",
+  "owner": {
+    "name": "Dmitry Koshelenko",
+    "url": "https://github.com/GomelHawk"
+  },
+  "plugins": [
+    {
+      "name": "vero-diff",
+      "source": "./plugins/vero-diff",
+      "description": "Browse what Claude changed on each turn, as a real diff with syntax highlighting",
+      "category": "productivity",
+      "tags": ["git", "diff", "review"]
+    }
+  ]
+}

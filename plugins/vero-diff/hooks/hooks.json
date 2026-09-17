@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.sh",
+            "args": ["pre"],
+            "timeout": 20,
+            "statusMessage": "snapshot"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.sh",
+            "args": ["post"],
+            "timeout": 20,
+            "statusMessage": "snapshot"
+          }
+        ]
+      }
+    ]
+  }
+}

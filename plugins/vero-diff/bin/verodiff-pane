@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# verodiff-pane [follow|browse] [session-id] - open verodiff in a side pane or new window.
+# Always exits 0 so it never aborts the skill that calls it.
+set -uo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CDIFF="$SELF_DIR/verodiff"
+
+MODE="${1:-follow}"
+SID="${2:-}"
+# how wide the new pane opens, as a percentage of the window. Resize afterwards with
+# your terminal's own binding (Windows Terminal: alt+shift+arrows, tmux: prefix+arrows).
+SIZE="${VERODIFF_PANE_SIZE:-50}"
+SIZE="${SIZE%\%}"
+case "$SIZE" in ''|*[!0-9]*) SIZE=50 ;; esac
+[ "$SIZE" -lt 10 ] && SIZE=10
+[ "$SIZE" -gt 90 ] && SIZE=90
+CMD="\"$CDIFF\""
+[ -n "$SID" ] && CMD="$CMD -S $SID"
+[ "$MODE" = "follow" ] && CMD="$CMD --follow"
+# a pane is a fresh login shell, so carry an explicit cache location across
+[ -n "${VERODIFF_DIR:-}" ] && CMD="VERODIFF_DIR=\"$VERODIFF_DIR\" $CMD"
+DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TITLE="verodiff"
+
+# --- never open a second viewer -------------------------------------------
+# The running viewer records its pid in the shadow repo; every terminal backend
+# is covered by this, not just tmux.
+SHADOW="$( (cd "$DIR" 2>/dev/null && "$CDIFF" --where 2>/dev/null) | head -1 )"
+live_pid=""; live_sid=""
+if [ -n "$SHADOW" ] && [ -d "$SHADOW" ]; then
+  for f in "$SHADOW"/viewer-*.pid; do
+    [ -f "$f" ] || continue
+    pid="$(cat "$f" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      live_pid="$pid"; live_sid="${f##*/viewer-}"; live_sid="${live_sid%.pid}"
+      [ -n "$SID" ] && [ "$live_sid" = "$SID" ] && break   # exact match wins
+    else
+      rm -f "$f"                                            # stale, viewer is gone
+    fi
+  done
+fi
+if [ -n "$live_pid" ]; then
+  if [ -n "${TMUX:-}" ]; then
+    existing="$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null | awk -v t="$TITLE" '$2==t{print $1; exit}')"
+    [ -n "$existing" ] && tmux select-pane -t "$existing" >/dev/null 2>&1
+  fi
+  if [ -n "$SID" ] && [ "$live_sid" != "$SID" ]; then
+    echo "verodiff is already open (pid $live_pid), pinned to session $live_sid - reusing that pane"
+  else
+    echo "verodiff is already open - reusing that pane"
+  fi
+  exit 0
+fi
+
+if [ -n "${TMUX:-}" ]; then
+  existing="$(tmux list-panes -F '#{pane_id} #{pane_title}' 2>/dev/null | awk -v t="$TITLE" '$2==t{print $1; exit}')"
+  if [ -n "$existing" ]; then
+    tmux select-pane -t "$existing" >/dev/null 2>&1
+    echo "verodiff pane is already open"
+    exit 0
+  fi
+  pane="$(tmux split-window -d -h -l "${SIZE}%" -c "$DIR" -P -F '#{pane_id}' "$CMD" 2>/dev/null \
+          || tmux split-window -d -h -p "$SIZE" -c "$DIR" -P -F '#{pane_id}' "$CMD" 2>/dev/null)"
+  [ -n "$pane" ] && tmux select-pane -t "$pane" -T "$TITLE" >/dev/null 2>&1
+  echo "opened a tmux pane running verodiff"
+
+elif command -v wezterm >/dev/null 2>&1 && [ -n "${WEZTERM_PANE:-}" ]; then
+  wezterm cli split-pane --right --percent "$SIZE" --cwd "$DIR" -- bash -lc "$CMD" >/dev/null 2>&1
+  echo "opened a wezterm pane running verodiff"
+
+elif command -v kitty >/dev/null 2>&1 && [ -n "${KITTY_WINDOW_ID:-}" ]; then
+  kitty @ launch --type=window --cwd "$DIR" bash -lc "$CMD" >/dev/null 2>&1
+  echo "opened a kitty window running verodiff"
+
+elif [ -n "${WT_SESSION:-}" ] && command -v wt.exe >/dev/null 2>&1; then
+  if [ -n "${WSL_DISTRO_NAME:-}" ] && command -v wsl.exe >/dev/null 2>&1; then
+    # Under WSL, Windows Terminal cannot cd into a Linux path and its `bash` is the
+    # Windows bash.exe shim - both fail with 0x8007010b. Go through wsl.exe, which
+    # understands the Linux path and runs the distro's own bash.
+    wt.exe -w 0 sp --size "0.$(printf '%02d' "$SIZE")" \
+      wsl.exe -d "$WSL_DISTRO_NAME" --cd "$DIR" -- bash -lc "$CMD" >/dev/null 2>&1
+  else
+    wt.exe -w 0 sp --size "0.$(printf '%02d' "$SIZE")" -d "$DIR" bash -lc "$CMD" >/dev/null 2>&1
+  fi
+  echo "opened a Windows Terminal pane running verodiff"
+
+elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v osascript >/dev/null 2>&1; then
+  osascript -e "tell application \"Terminal\" to do script \"cd '$DIR' && $CMD\"" >/dev/null 2>&1
+  echo "opened a Terminal window running verodiff"
+
+elif command -v x-terminal-emulator >/dev/null 2>&1; then
+  (cd "$DIR" && x-terminal-emulator -e bash -lc "$CMD" >/dev/null 2>&1 &)
+  echo "opened a terminal window running verodiff"
+
+else
+  echo "no tmux/wezterm/kitty/Windows Terminal found - run this in another terminal: $CMD"
+fi
+exit 0
