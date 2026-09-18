@@ -23,15 +23,39 @@ Snapshots are stored outside your project. Your `.git` is never written to.
 
 ## Install
 
-Two lines, typed inside Claude Code:
+Two commands, typed inside Claude Code. **Run them one at a time** - the first has to
+finish before the second will work.
+
+**1. Add the marketplace.** Type this on its own and press Enter:
 
 ```
 /plugin marketplace add GomelHawk/VeroDiff
+```
+
+Wait for `✔ Successfully added marketplace: verodiff-marketplace`.
+
+**2. Install the plugin.** Now type this one:
+
+```
 /plugin install vero-diff@verodiff-marketplace
 ```
 
+You should see `✓ Installed VeroDiff. Plugin is now active.`
+
 Then restart Claude Code. That is the whole install - there is nothing to configure and
 no API key involved.
+
+> Pasting both lines at once does not work. If a panel appears asking you to
+> `Enter marketplace source:`, it wants only the repository, `GomelHawk/VeroDiff`, and
+> nothing else on the line. Pasting the second command into that box gives you
+> `... is not a valid GitHub owner/repo shorthand`.
+
+Prefer your shell? These two take their arguments directly and never open a panel:
+
+```bash
+claude plugin marketplace add GomelHawk/VeroDiff
+claude plugin install vero-diff@verodiff-marketplace
+```
 
 To confirm it took, run `/hooks`: you should see two `snapshot.sh` entries, one under
 `UserPromptSubmit` and one under `Stop`. Those are the two boundaries of a turn.
