@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.1 - 2026-09-18
+
+Repairs a failure that made the viewer unusable on macOS.
+
+- **The viewer works on macOS again.** It used `mapfile`, which needs bash 4, while macOS
+  ships bash 3.2 as `/bin/bash`. `verodiff` died with `mapfile: command not found`, so the
+  step list, every diff and the pane all came back empty.
+- **Arrow keys work on bash 3.2 too.** The escape sequence behind them was read with a
+  fractional `read -t` timeout, also bash 4 only, which silently killed the keys rather
+  than reporting anything.
+- The viewer no longer carries on in the wrong directory when it cannot enter the
+  repository root.
+- Clearer README: installing and updating are now numbered, one-command-at-a-time steps
+  showing the output to expect after each, and there is a troubleshooting table and a
+  section explaining how updates reach you.
+
 ## 0.1.0 - 2026-09-17
 
 First release.

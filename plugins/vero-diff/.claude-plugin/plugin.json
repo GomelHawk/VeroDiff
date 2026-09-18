@@ -2,7 +2,7 @@
   "name": "vero-diff",
   "displayName": "VeroDiff",
   "description": "Snapshots your working tree before and after every turn, so you can review exactly what Claude changed - one turn at a time, with full diffs and syntax highlighting. Snapshots live outside your project's .git.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Dmitry Koshelenko",
     "url": "https://github.com/GomelHawk"
