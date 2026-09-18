@@ -1,0 +1,17 @@
+version: 2
+
+# VeroDiff has no package dependencies - it is bash and git. The only thing that can go
+# stale is the actions the CI workflow pins, so that is all this watches.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+    groups:
+      actions:
+        patterns:
+          - "*"

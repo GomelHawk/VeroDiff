@@ -27,6 +27,10 @@ no notion of where a turn started.
 verodiff/                                  marketplace repo root
 ├── .claude-plugin/marketplace.json        catalog: name "verodiff-marketplace"
 ├── .gitattributes                         forces LF: the scripts are bash
+├── .github/workflows/ci.yml               manifests, shell lint, smoke, line endings
+├── .github/dependabot.yml                 watches the CI actions; there are no deps
+├── assets/                                promo.png (README hero), logos
+├── tests/smoke.sh                         the whole test suite: git + bash only
 ├── install.sh                             validate -> marketplace add -> plugin install
 ├── uninstall.sh                           plugin uninstall (+ --purge for snapshots)
 ├── CLAUDE.md                              this file
@@ -137,7 +141,13 @@ Re-deriving these costs an afternoon each:
 
 ## Testing
 
+`tests/smoke.sh` is the suite - 44 assertions, no Claude Code and no network, so it runs
+the same locally and on a runner. Add a case there for anything you fix; CI runs it on
+Linux and macOS, and macOS is the only place `snapshot.sh`'s `md5 -q` branch executes.
+
 ```bash
+tests/smoke.sh
+
 claude plugin validate .                      # marketplace catalog
 claude plugin validate ./plugins/vero-diff    # manifest, hooks.json, skills
 claude plugin validate . --strict             # for CI
@@ -193,13 +203,11 @@ Per the working rules above, the owner runs this, not you:
 git add . && git commit -m "VeroDiff 0.1.0" && git push
 ```
 
-Users need `/plugin marketplace add <owner>/verodiff` then
+Users need `/plugin marketplace add GomelHawk/VeroDiff` then
 `/plugin install vero-diff@verodiff-marketplace`. Bump `version` in `plugin.json` and add
 a `CHANGELOG.md` entry first.
 
-Placeholders still to fill before publishing: `owner.name` in `marketplace.json`,
-`author.name` in `plugin.json`, the copyright line in `LICENSE`, and the clone URL in
-`README.md`.
+Owner, author, licence and URLs are all filled in - there are no placeholders left.
 
 ## Open ideas, not implemented
 

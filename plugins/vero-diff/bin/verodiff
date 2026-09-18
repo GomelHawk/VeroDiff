@@ -25,7 +25,7 @@ if [ "${1:-}" = "--purge-all" ]; then
 fi
 
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not a git repository - nothing to show"; exit 0; }
-cd "$TOP"
+cd "$TOP" || exit 0
 
 CACHE="${VERODIFF_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/verodiff}"
 if command -v md5sum >/dev/null 2>&1;  then key="$(printf '%s' "$TOP" | md5sum | cut -c1-12)"

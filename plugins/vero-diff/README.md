@@ -1,4 +1,15 @@
-# VeroDiff
+<p align="center">
+  <img src="https://raw.githubusercontent.com/GomelHawk/VeroDiff/main/assets/promo.png"
+       alt="VeroDiff - see exactly what changed in each turn. A Claude Code plugin that shows the real diff for every turn."
+       width="900">
+</p>
+
+<p align="center">
+  <a href="https://github.com/GomelHawk/VeroDiff/actions/workflows/ci.yml"><img src="https://github.com/GomelHawk/VeroDiff/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/GomelHawk/VeroDiff/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT licence"></a>
+  <img src="https://img.shields.io/badge/Claude%20Code-plugin-8a63d2.svg" alt="Claude Code plugin">
+  <img src="https://img.shields.io/badge/requires-git%20%2B%20bash-555.svg" alt="Requires git and bash">
+</p>
 
 A Claude Code plugin that lets you review **what changed on each turn**, as a real diff
 with syntax highlighting, instead of one undifferentiated pile of uncommitted work.
@@ -12,20 +23,42 @@ Snapshots are stored outside your project. Your `.git` is never written to.
 
 ## Install
 
-```bash
-git clone https://github.com/GomelHawk/VeroDiff
-cd VeroDiff
-./install.sh                    # or: ./install.sh --scope project
-```
-
-Or by hand, from inside Claude Code:
+Two lines, typed inside Claude Code:
 
 ```
-/plugin marketplace add ./VeroDiff
+/plugin marketplace add GomelHawk/VeroDiff
 /plugin install vero-diff@verodiff-marketplace
 ```
 
-Restart Claude Code, then check `/hooks` - you should see the two `snapshot.sh` entries.
+Then restart Claude Code. That is the whole install - there is nothing to configure and
+no API key involved.
+
+To confirm it took, run `/hooks`: you should see two `snapshot.sh` entries, one under
+`UserPromptSubmit` and one under `Stop`. Those are the two boundaries of a turn.
+
+<details>
+<summary>Installing from a clone instead</summary>
+
+```bash
+git clone https://github.com/GomelHawk/VeroDiff
+cd VeroDiff
+./install.sh                    # or: ./install.sh --scope project, to share it with a team
+```
+
+`--scope project` writes the plugin into the repository's `.claude/settings.json`, so
+everyone who trusts that folder gets VeroDiff without installing anything themselves.
+</details>
+
+## Your first diff
+
+1. Open Claude Code in any git repository.
+2. Ask it to change a file.
+3. Run **`/vero-diff:lastdiff`** - the diff of that one turn is printed into the chat.
+4. Run **`/vero-diff:steps`** - a pane opens beside you and redraws after every turn.
+
+VeroDiff only sees turns that happen after it is installed, so your first recorded turn is
+the next thing you ask for. It reads your working tree and writes nothing into your
+project - see [Where snapshots live](#where-snapshots-live).
 
 ## Use
 
@@ -146,7 +179,19 @@ isolation, give each session its own `git worktree`.
 
 ## Develop and test locally
 
-Validate the structure first. The two runs check different things - the marketplace
+Run the test suite first. It needs nothing but git and bash - no Claude Code, no network,
+no credentials - and it is the same script CI runs:
+
+```bash
+tests/smoke.sh
+```
+
+It asserts the promises the plugin makes: that a snapshot never adds an object to the
+project's own `.git`, that `.gitignore` is honoured, that every `verodiff` mode exits 0
+(a non-zero exit aborts a skill invocation), and that no internal `[pre]`/`[post]` marker
+leaks into what a user reads.
+
+Then validate the structure. The two runs check different things - the marketplace
 catalog, and the plugin's own manifest, hooks and component directories:
 
 ```bash
@@ -180,6 +225,17 @@ exercises the marketplace layout:
 A local-directory marketplace loads the plugin **in place** rather than copying it into
 the cache, so your edits apply at the next `/reload-plugins` with no version bump.
 
+### What CI checks
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | Checks |
+| :-- | :-- |
+| **Plugin manifests** | all three `claude plugin validate` runs, `--strict` included |
+| **Shell lint** | `bash -n` and ShellCheck (`-S warning`) over every script |
+| **Smoke** | `tests/smoke.sh` on Linux *and* macOS - macOS matters, because `snapshot.sh` takes its `md5 -q` branch there rather than `md5sum` |
+| **Line endings** | re-clones with `core.autocrlf=true`, the Windows default, and proves the scripts still have LF endings, are executable, and run |
+
 ## Share it
 
 VeroDiff is already a marketplace repository, so publishing is just pushing it:
@@ -200,9 +256,9 @@ Users then need two lines:
 Any git host works - GitLab, Bitbucket, self-hosted - with the full URL instead of the
 `owner/repo` shorthand.
 
-Before pushing, fill in the placeholders: `owner.name` in `.claude-plugin/marketplace.json`,
-`author.name` in `plugins/vero-diff/.claude-plugin/plugin.json`, and the copyright line in
-`LICENSE`.
+Forking this for your own plugin? The fields to change are `owner.name` in
+`.claude-plugin/marketplace.json`, `author.name`, `homepage` and `repository` in
+`plugins/vero-diff/.claude-plugin/plugin.json`, and the copyright line in `LICENSE`.
 
 ### Releasing updates
 
@@ -238,6 +294,20 @@ can't be used, which is why this catalog is called `verodiff-marketplace`.
 
 `claude plugin uninstall` removes the hooks and skills on its own - there is no settings
 file to clean up by hand.
+
+## Troubleshooting
+
+| What you see | What it means |
+| :-- | :-- |
+| `No snapshots yet` | The hooks have not run. Check `/hooks` lists two `snapshot.sh` entries, then send one prompt. |
+| `/hooks` lists nothing for VeroDiff | Claude Code was not restarted after installing. Restart it, or run `/reload-plugins`. |
+| `not a git repository - nothing to show` | VeroDiff diffs a git working tree; there is nothing to snapshot outside one. |
+| The pane never opens | No supported terminal was detected. Run `verodiff` yourself in a second terminal - it is the same viewer. |
+| `verodiff: command not found` | The plugin's `bin/` is on `PATH` only while the plugin is enabled. Check `/plugin`. |
+| A turn shows edits you did not ask for | Either you changed files yourself between turns - those appear as `edits outside a turn` - or a second session shares this working tree. See [Concurrent sessions](#concurrent-sessions). |
+| The pane is stuck on an older turn | You are browsing history, so new turns do not yank the view. The key bar says `* new step, press r`; press `r`. |
+| A turn you expected is missing | A turn that changed nothing records no step, by design. |
+| Snapshots are taking up space | `verodiff --where` shows the location and size, `/vero-diff:purge` clears this project, `verodiff --purge-all` clears every project. |
 
 ## Requirements
 

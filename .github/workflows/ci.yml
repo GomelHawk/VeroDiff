@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manifests:
+    name: Plugin manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # `claude plugin validate` reads local files only - no account, no API key.
+      - name: Validate the marketplace catalog
+        run: claude plugin validate .
+
+      - name: Validate the plugin manifest, hooks and skills
+        run: claude plugin validate ./plugins/vero-diff
+
+      - name: Validate again, warnings as errors
+        run: claude plugin validate . --strict
+
+  shell:
+    name: Shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every script
+        run: |
+          for f in install.sh uninstall.sh tests/smoke.sh \
+                   plugins/vero-diff/scripts/snapshot.sh \
+                   plugins/vero-diff/bin/verodiff \
+                   plugins/vero-diff/bin/verodiff-pane; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          shellcheck -s bash -S warning \
+            install.sh uninstall.sh tests/smoke.sh \
+            plugins/vero-diff/scripts/snapshot.sh \
+            plugins/vero-diff/bin/verodiff \
+            plugins/vero-diff/bin/verodiff-pane
+
+  smoke:
+    # macOS is not decoration: snapshot.sh picks `md5 -q` over `md5sum` there, and that
+    # branch never runs on a Linux developer machine.
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the smoke test
+        run: tests/smoke.sh
+
+  endings:
+    name: Line endings and permissions
+    runs-on: ubuntu-latest
+    steps:
+      # A clone with core.autocrlf=true is what a Windows user gets. Without
+      # .gitattributes it hands them scripts that die on "/usr/bin/env: 'bash\r'".
+      - name: Clone the way a Windows user would
+        run: git -c core.autocrlf=true clone --depth 1 "${{ github.server_url }}/${{ github.repository }}" checkout
+
+      - name: No CRLF reached the working tree
+        working-directory: checkout
+        run: |
+          bad=0
+          for f in install.sh uninstall.sh tests/smoke.sh \
+                   plugins/vero-diff/scripts/snapshot.sh \
+                   plugins/vero-diff/bin/verodiff \
+                   plugins/vero-diff/bin/verodiff-pane; do
+            if grep -q $'\r$' "$f"; then echo "CRLF in $f"; bad=1; else echo "LF ok: $f"; fi
+            if [ ! -x "$f" ]; then echo "not executable: $f"; bad=1; fi
+          done
+          exit "$bad"
+
+      - name: The scripts actually run from that clone
+        working-directory: checkout
+        run: ./plugins/vero-diff/bin/verodiff --help
