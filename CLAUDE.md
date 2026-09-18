@@ -1,6 +1,7 @@
 # VeroDiff - working notes
 
-Context for continuing work on this repository. Everything here is current as of v0.1.0.
+Context for continuing work on this repository. The current version is whatever
+`plugins/vero-diff/.claude-plugin/plugin.json` says; no other file states one.
 
 ## Working rules
 
@@ -205,19 +206,90 @@ echo '{"session_id":"sess-A"}' | .../scripts/snapshot.sh post
 **Regression to always re-check after touching `snapshot.sh`:** count objects in the test
 project's `.git/objects` before and after a snapshot. The number must not change.
 
-## Releasing
+## Cutting a release
 
-Per the working rules above, the owner runs this, not you:
+**Trigger.** The owner says "update version", "bump the version", "prepare a release" or
+anything equivalent. Run the whole procedure; do not start it unprompted, and do not skip
+steps because the change looks small.
+
+### 1. Collect every change since the last release
 
 ```bash
-git add . && git commit -m "VeroDiff 0.1.0" && git push
+LAST="$(git describe --tags --abbrev=0 --match 'vero-diff--v*' 2>/dev/null)"
+# no release tag yet? fall back to the commit that last set the version
+[ -n "$LAST" ] || LAST="$(git log -1 --format=%H \
+    -S'"version"' -- plugins/vero-diff/.claude-plugin/plugin.json)"
+
+git log --no-merges --format='%h %s' "$LAST..HEAD"
+git diff --stat "$LAST..HEAD"
+git diff "$LAST..HEAD" -- plugins/vero-diff bin scripts skills
 ```
 
-Users need `/plugin marketplace add GomelHawk/VeroDiff` then
-`/plugin install vero-diff@verodiff-marketplace`. Bump `version` in `plugin.json` and add
-a `CHANGELOG.md` entry first.
+Read the diff, not only the subjects. Commit messages here are one line by policy, so they
+do not say what a user will actually notice. Weigh everything when judging the bump, but
+keep CI, tests and internal refactors out of the user-facing notes.
 
-Owner, author, licence and URLs are all filled in - there are no placeholders left.
+### 2. Propose a number
+
+The project is 0.x, so:
+
+| What changed | Bump |
+| :-- | :-- |
+| a command, flag, key or output format removed or renamed | minor - `0.2.0` |
+| a new command, flag, terminal, or capability | minor |
+| fixes, wording, docs, CI, tests only | patch - `0.1.1` |
+
+After 1.0 this becomes ordinary semver, breaking changes taking the major.
+
+### 3. Ask before editing anything
+
+Put it to the owner with `AskUserQuestion`: the computed number first, the neighbouring
+ones as alternatives, each labelled with why it fits. They may want a different number
+entirely - their answer wins over the table above. Never bump without a reply.
+
+### 4. Make the edits
+
+- **`plugins/vero-diff/.claude-plugin/plugin.json`** - `version`. The only place a version
+  has any effect, and the only file that *must* change. Never also put `version` in the
+  marketplace entry; the manifest silently wins.
+- **`plugins/vero-diff/CHANGELOG.md`** - a new `## <version> - <YYYY-MM-DD>` section at the
+  top, in the house style: user-facing wording, grouped, never raw commit subjects.
+- Anything the release makes untrue in `README.md`, `plugins/vero-diff/README.md` (keep
+  those two byte-identical) or this file.
+- Then run `tests/smoke.sh` and the three `claude plugin validate` commands, and report
+  the result. Do not hand back a release that has not been checked.
+
+### 5. Hand back - never execute
+
+The working rules at the top still apply: no commit, no push, no tag. Stage the edits and
+hand the owner three things.
+
+1. The one-line commit message.
+2. **Release notes** for the GitHub Release body, ready to paste: the changelog entry as a
+   standalone note, opening with one sentence on why anyone should care.
+3. The commands to run:
+
+```bash
+git add -A && git commit -m "VeroDiff <version>" && git push
+claude plugin tag --push -m "VeroDiff %s"    # tags vero-diff--v<version>, checks the manifests agree
+gh release create vero-diff--v<version> --title "VeroDiff <version>" --notes-file notes.md
+```
+
+### What a release actually is
+
+A user's marketplace tracks **`main`**, not tags - `claude plugin marketplace add` has no
+ref, tag or branch option, and the stored source is just `{"source":"github","repo":...}`.
+So pushing a bumped `version` to `main` **is** the release; the tag and the GitHub Release
+only announce it. Two consequences worth remembering:
+
+- a fix pushed to `main` without a version bump reaches nobody - the cache is keyed by the
+  version string, at `~/.claude/plugins/cache/verodiff-marketplace/vero-diff/<version>/`
+- unfinished work sitting on `main` ships the moment the version changes, so keep it on a
+  branch
+
+Users update with `/plugin marketplace update verodiff-marketplace` then
+`/plugin update vero-diff@verodiff-marketplace`, and a restart. Nothing auto-updates and
+nothing notifies them, which is why the GitHub Release matters.
 
 ## Open ideas, not implemented
 

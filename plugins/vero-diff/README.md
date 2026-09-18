@@ -160,6 +160,30 @@ verodiff --where      where snapshots live, and how big they are
 verodiff --purge-all  delete every snapshot cache
 ```
 
+## Updating
+
+Nothing updates itself, and Claude Code will not tell you a new version exists. Releases
+are announced at
+[github.com/GomelHawk/VeroDiff/releases](https://github.com/GomelHawk/VeroDiff/releases) -
+watch the repository if you want an email.
+
+To pull the latest, inside Claude Code:
+
+```
+/plugin marketplace update verodiff-marketplace
+/plugin update vero-diff@verodiff-marketplace
+```
+
+then restart Claude Code. The same thing from a shell:
+
+```bash
+claude plugin marketplace update verodiff-marketplace
+claude plugin update vero-diff@verodiff-marketplace
+```
+
+`claude plugin list` shows which version you are on, and `claude plugin update` says so
+explicitly when there is nothing newer.
+
 ## Where snapshots live
 
 Not in your project. Each project gets its own bare repository under `~/.cache/verodiff/`,
@@ -241,7 +265,7 @@ the cache, so your edits apply at the next `/reload-plugins` with no version bum
 VeroDiff is already a marketplace repository, so publishing is just pushing it:
 
 ```bash
-git init && git add . && git commit -m "VeroDiff 0.1.0"
+git init && git add . && git commit -m "VeroDiff <version>"
 git remote add origin https://github.com/GomelHawk/VeroDiff
 git push -u origin main
 ```
