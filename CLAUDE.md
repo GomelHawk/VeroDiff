@@ -5,6 +5,14 @@ Context for continuing work on this repository. The current version is whatever
 
 ## Working rules
 
+- **A question gets an answer, nothing else.** When the owner asks for information -
+  "how does X work", "what about Y", "why is Z" - reply with the information and change
+  no files. Do not edit, stage, create or delete anything as a side effect of answering.
+- **Ask before changing anything that was not asked for.** If you spot something worth
+  changing - wrong documentation, a bug, a stale reference, an obvious improvement - say
+  what it is and why it should change, then wait for a yes. Noticing a problem while
+  doing something else is a reason to report it, not a licence to fix it. Approval for
+  one change never extends to the next thing you notice.
 - **Never commit.** Do not run `git commit`, `git push`, `git tag`, `git rebase` or
   anything else that writes history - not even when the work is finished, the tree is
   clean and the change is obviously correct. Editing files and staging them is fine;

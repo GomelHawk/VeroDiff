@@ -300,14 +300,30 @@ A useful CI step is `claude plugin validate . --strict` on every push.
 - **Teams**: commit `extraKnownMarketplaces` and `enabledPlugins` to a repo's
   `.claude/settings.json`, and everyone who trusts that folder gets VeroDiff with no
   separate prompt.
-- **Wider audience**: list it in a community marketplace catalog, or submit to Anthropic's
-  official directory. Review there looks at documentation quality and security boundaries,
-  not just whether the JSON validates.
+- **Wider audience**: submit to Anthropic's community marketplace, `claude-community`,
+  using the form at
+  [platform.claude.com/plugins/submit](https://platform.claude.com/plugins/submit), or the
+  claude.ai form if you have a Team or Enterprise organization. Submissions get automated
+  safety screening and the same `claude plugin validate` check you run locally. Pull
+  requests opened against
+  [`anthropics/claude-plugins-community`](https://github.com/anthropics/claude-plugins-community)
+  are closed automatically - everything goes through the form. Once approved, your plugin
+  is pinned to a commit SHA in that catalog and their CI moves the pin forward as you
+  push; the public catalog syncs nightly, so expect a delay before it is installable.
+  The curated `claude-plugins-official` marketplace is a separate thing: Anthropic decides
+  what goes in it, there is no application process, and the forms above do not submit to
+  it.
 - **No git on the user's machine**: publish a zip and list it with an `archive` source
   plus a `sha256` pin.
 
 Reserved marketplace names (`claude-plugins-official`, `anthropic-plugins`, and similar)
 can't be used, which is why this catalog is called `verodiff-marketplace`.
+
+VeroDiff's top-level `bin/` directory is fine for this marketplace and for the community
+marketplace. Only claude.ai **organization settings** distribution rejects it, so the
+restructuring described in
+[Note for organization distribution](#note-for-organization-distribution) is needed for
+that route alone.
 
 ## Uninstall
 
