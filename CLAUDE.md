@@ -223,7 +223,10 @@ steps because the change looks small.
 ### 1. Collect every change since the last release
 
 ```bash
-LAST="$(git describe --tags --abbrev=0 --match 'vero-diff--v*' 2>/dev/null)"
+# tags in this repo are plain `v<version>`, e.g. v0.1.1 - not the `vero-diff--v*` form
+# that `claude plugin tag` produces. A pattern that matches nothing fails silently and
+# quietly rebuilds a changelog for work already shipped, so keep these two in step.
+LAST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)"
 # no release tag yet? fall back to the commit that last set the version
 [ -n "$LAST" ] || LAST="$(git log -1 --format=%H \
     -S'"version"' -- plugins/vero-diff/.claude-plugin/plugin.json)"
@@ -279,8 +282,8 @@ hand the owner three things.
 
 ```bash
 git add -A && git commit -m "VeroDiff <version>" && git push
-claude plugin tag --push -m "VeroDiff %s"    # tags vero-diff--v<version>, checks the manifests agree
-gh release create vero-diff--v<version> --title "VeroDiff <version>" --notes-file notes.md
+git tag v<version> && git push origin v<version>
+gh release create v<version> --title "VeroDiff <version>" --notes-file notes.md
 ```
 
 ### What a release actually is
@@ -288,7 +291,10 @@ gh release create vero-diff--v<version> --title "VeroDiff <version>" --notes-fil
 A user's marketplace tracks **`main`**, not tags - `claude plugin marketplace add` has no
 ref, tag or branch option, and the stored source is just `{"source":"github","repo":...}`.
 So pushing a bumped `version` to `main` **is** the release; the tag and the GitHub Release
-only announce it. Two consequences worth remembering:
+only announce it. A pushed tag is *not* a GitHub Release either - the Releases page stays
+empty until one is published on top of the tag, so `gh release create` (or **Publish
+release**, not **Save draft**, in the web form) is a step of its own. Two consequences
+worth remembering:
 
 - a fix pushed to `main` without a version bump reaches nobody - the cache is keyed by the
   version string, at `~/.claude/plugins/cache/verodiff-marketplace/vero-diff/<version>/`
