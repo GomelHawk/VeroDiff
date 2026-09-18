@@ -311,7 +311,8 @@ file to clean up by hand.
 
 ## Requirements
 
-git, bash, and optionally `delta` for nicer diffs and `tmux`, WezTerm, kitty or Windows
+git and bash - including the bash 3.2 that macOS ships, so nothing needs installing
+there - and optionally `delta` for nicer diffs and `tmux`, WezTerm, kitty or Windows
 Terminal for the side pane. Under WSL the pane opens through `wsl.exe`, so Windows
 Terminal can reach your Linux working directory. Without any of them the viewer still
 runs - `verodiff` in a second terminal does the same job. See

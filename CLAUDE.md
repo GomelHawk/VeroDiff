@@ -133,6 +133,16 @@ Re-deriving these costs an afternoon each:
   That is a baseline, not an edit, and it says so.
 - **Turn numbers are counted from the oldest snapshot forward**, so they stay stable while
   the newest-first step index shifts with every new turn.
+- **Target bash 3.2, not the bash you have.** macOS still ships 3.2 as `/bin/bash`, so
+  `mapfile`/`readarray` and a fractional `read -t 0.01` are off limits - the first fails
+  outright (`mapfile: command not found`, then `SNAPS: unbound variable` under `set -u`),
+  the second silently kills every arrow key. Read arrays with a `while read` loop, and
+  gate anything newer on `${BASH_VERSINFO[0]}`. `tests/smoke.sh` greps for both, and the
+  macOS CI job is the only place this is genuinely exercised.
+- **Do not assert on a count of files in `.git/objects`.** Git repacks loose objects
+  whenever it feels like it, so the count legitimately *falls* mid-test. The invariant is
+  that VeroDiff never **adds** an object: diff the sorted object lists and require the
+  added set to be empty.
 - **`.gitattributes` pinning `eol=lf` is load-bearing, not tidiness.** Every executable
   here is bash, and `core.autocrlf=true` is the default on Windows installs of git, so a
   clone without it hands the user scripts that die with

@@ -17,6 +17,10 @@ set -uo pipefail
 EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
 LIMIT=200
 POLL=2
+# bash 3.2 (macOS's /bin/bash) rejects a fractional `read -t`. Without this the escape
+# sequence behind every arrow key would fail to read and the keys would go dead.
+FRACTIONAL_TIMEOUT=0
+[ "${BASH_VERSINFO[0]:-3}" -ge 4 ] && FRACTIONAL_TIMEOUT=1
 
 if [ "${1:-}" = "--purge-all" ]; then
   C="${VERODIFF_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/verodiff}"
@@ -60,7 +64,12 @@ fi
 base_of() { git rev-parse -q --verify "$1^" 2>/dev/null || echo "$EMPTY_TREE"; }
 
 load_snaps() {
-  mapfile -t SNAPS < <(git rev-list --max-count="$LIMIT" "$REF" 2>/dev/null)
+  # No `mapfile`/`readarray` anywhere in this file: they are bash 4+, and macOS still
+  # ships bash 3.2 as /bin/bash, where they fail with "command not found".
+  SNAPS=()
+  local line
+  while IFS= read -r line; do SNAPS+=("$line"); done \
+    < <(git rev-list --max-count="$LIMIT" "$REF" 2>/dev/null)
   N=${#SNAPS[@]}
   SUBJ=(); WHEN=(); TURN=()
   local a t i p=0
@@ -222,7 +231,13 @@ while :; do
   [ "$dirty" = 1 ] && draw
   IFS= read -rsn1 -t "$POLL" k </dev/tty || { poll; continue; }
   if [ "$k" = $'\033' ]; then    # arrow keys
-    IFS= read -rsn2 -t 0.01 rest </dev/tty || rest=""
+    if [ "$FRACTIONAL_TIMEOUT" = 1 ]; then
+      IFS= read -rsn2 -t 0.01 rest </dev/tty || rest=""
+    else
+      # no sub-second timeout available: the two bytes of an arrow key arrive together,
+      # so read them blocking. A lone Esc waits for the next key, which is survivable.
+      IFS= read -rsn2 rest </dev/tty || rest=""
+    fi
     case "$rest" in "[A") k=k ;; "[B") k=j ;; "[5") k=b ;; "[6") k=" " ;; *) k="" ;; esac
   fi
   case "$k" in

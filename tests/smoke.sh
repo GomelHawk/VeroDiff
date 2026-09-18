@@ -44,6 +44,19 @@ for f in .claude-plugin/marketplace.json plugins/vero-diff/.claude-plugin/plugin
   fi
 done
 
+# macOS still ships bash 3.2 as /bin/bash. `mapfile`/`readarray` and a fractional
+# `read -t` are bash 4+, and an unguarded one breaks the viewer for every macOS user.
+for f in install.sh uninstall.sh plugins/vero-diff/scripts/snapshot.sh \
+         plugins/vero-diff/bin/verodiff plugins/vero-diff/bin/verodiff-pane; do
+  if grep -qE '^[^#]*\b(mapfile|readarray)\b' "$ROOT/$f"; then
+    no "no bash 4+ syntax: $f" "mapfile/readarray needs bash 4; macOS ships 3.2"
+  elif grep -qE '^[^#]*read\b.*-t +[0-9]*\.[0-9]' "$ROOT/$f" && ! grep -q 'BASH_VERSINFO' "$ROOT/$f"; then
+    no "no bash 4+ syntax: $f" "fractional 'read -t' needs bash 4 - gate it on BASH_VERSINFO"
+  else
+    ok "no bash 4+ syntax: $f"
+  fi
+done
+
 # hooks.json must not be declared in plugin.json as well, or the plugin loads twice.
 # Check the parsed key, not the raw text - "hooks" is also a legitimate keyword value.
 if python3 -c 'import json,sys; sys.exit(1 if "hooks" in json.load(open(sys.argv[1])) else 0)' \
@@ -61,13 +74,18 @@ mkdir -p "$REPO"; cd "$REPO" || exit 1
 git init -q -b main
 git config user.email smoke@test; git config user.name smoke
 git config core.autocrlf input          # the fixture's endings are not what we are testing
+git config gc.auto 0                    # no background repack while we are counting objects
+git config core.commitGraph false
 printf 'alpha\nbeta\n' > a.txt
 printf '*.log\n' > .gitignore
 git add -A; git commit -qm init
 export CLAUDE_PROJECT_DIR="$REPO"
 
-objects() { find "$REPO/.git/objects" -type f | wc -l | tr -d ' '; }
-before="$(objects)"
+# List object files by path rather than counting them: git is free to pack loose objects
+# whenever it likes, which changes the count without anything having been written by us.
+# The promise VeroDiff makes is narrower and exact - it never ADDS an object here.
+objects() { find "$REPO/.git/objects" -type f | sed "s|^$REPO/.git/objects/||" | LC_ALL=C sort; }
+objects > "$WORK/objects.before"
 
 # ---- turn 1 ----
 echo '{"prompt":"first turn","session_id":"smoke"}' | "$SNAP" pre
@@ -90,7 +108,13 @@ echo '{"session_id":"smoke"}' | "$SNAP" post
 steps_after="$("$VD" -S smoke -l | grep -c '^ *[0-9]')"
 is "a no-op turn adds no step" "$steps_after" "$steps_before"
 
-is "project .git was never written to" "$(objects)" "$before"
+objects > "$WORK/objects.after"
+added="$(LC_ALL=C comm -13 "$WORK/objects.before" "$WORK/objects.after")"
+if [ -z "$added" ]; then
+  ok "project .git was never written to"
+else
+  no "project .git was never written to" "objects appeared: $(printf '%s' "$added" | tr '\n' ' ')"
+fi
 
 diff0="$("$VD" -S smoke -n 0)"
 diff1="$("$VD" -S smoke -n 1)"
