@@ -191,14 +191,23 @@ are announced at
 [github.com/GomelHawk/VeroDiff/releases](https://github.com/GomelHawk/VeroDiff/releases) -
 watch the repository if you want an email.
 
-To pull the latest, inside Claude Code:
+To pull the latest, inside Claude Code, **one command at a time** - same as installing.
+
+**1. Refresh the catalog**, so Claude Code sees that a newer version exists:
 
 ```
 /plugin marketplace update verodiff-marketplace
+```
+
+**2. Update the plugin:**
+
+```
 /plugin update vero-diff@verodiff-marketplace
 ```
 
-then restart Claude Code. The same thing from a shell:
+then restart Claude Code. Pasting both lines together fails the same way the install does.
+
+The same thing from a shell, where you can run them back to back:
 
 ```bash
 claude plugin marketplace update verodiff-marketplace
