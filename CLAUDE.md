@@ -43,7 +43,8 @@ verodiff/                                  marketplace repo root
 ├── assets/                                promo2.png (README hero), promo.png (0.1.x), logos
 ├── tests/smoke.sh                         snapshot.sh's suite: git + bash only
 ├── install.sh                             validate -> marketplace add -> plugin install
-├── uninstall.sh                           plugin uninstall (+ --purge for snapshots)
+│                                          (--scope project|local DIR for a project)
+├── uninstall.sh                           plugin uninstall (+ --scope, --purge)
 ├── CLAUDE.md                              this file
 ├── CONTRIBUTING.md                        testing, CI, publishing: for maintainers
 ├── README.md                              user-facing docs
@@ -64,12 +65,22 @@ verodiff/                                  marketplace repo root
 bare repo in the cache and `GIT_WORK_TREE` to the project, stages everything into a
 private index with `git add -A`, writes a tree, and chains it onto a ref with
 `git commit-tree` + `git update-ref`. No object ever lands in the project's `.git`;
-`.gitignore` is still honoured because git reads it from the work tree. If the tree is
-unchanged from the parent snapshot, no commit is made. Its input is the environment -
+`.gitignore` is still honoured because git reads it from the work tree. What git would read
+from the project's own `.git` instead is carried over by hand: `info/exclude` is copied into
+the shadow on every run (`info/attributes` too), and the project's `filter.*` entries go
+to `git add` as `-c` - read from every scope, not `--local`, which misses `include.path`
+and `config.worktree`. A file whose filter is named but has no `clean`/`process` anywhere
+is taken off the session's index and excluded; that `check-attr` walk runs only when some
+attributes file mentions `filter`. It first unsets every variable `git rev-parse --local-env-vars` lists, so nothing
+inherited can point it elsewhere. `git add --ignore-errors` skips a file it cannot read
+rather than aborting; a still-`fatal` add takes no snapshot. If the tree is unchanged from
+the parent snapshot, no commit is made; after one is, `git gc --auto` packs the loose
+objects once there are enough of them. Its input is the environment -
 `VERODIFF_SESSION_ID`, `VERODIFF_PROMPT`, `CLAUDE_PROJECT_DIR` - so it needs no JSON
 parser, and it always exits 0. `snapshot.sh where` prints the shadow repo's path and is
 the only place the cache layout is computed; `snapshot.sh prune DAYS` drops sessions whose
-newest snapshot is older than DAYS (never the asking session) and runs
+newest snapshot is older than DAYS (never the asking session), and index or label files
+with no ref that are DAYS old themselves, and runs
 `git gc --prune=2.weeks.ago`, so a snapshot another session is writing cannot lose an
 object.
 
@@ -98,9 +109,21 @@ picker: other sessions' edits would only confuse.
 their turn diffs. A snapshot is of the whole tree and cannot attribute changes. The answer
 is a separate `git worktree` per session; do not try to solve this with refs.
 
+**Submodules.** `git add -A` records a submodule (or any nested repository) as a gitlink,
+the commit it points to, so its uncommitted work is in no tree. Each dirty one gets a
+fingerprint - `cksum` of `git diff HEAD` and its untracked files, read with
+`GIT_OPTIONAL_LOCKS=0` so its own `.git` is never written - kept as a `submodule-state`
+trailer. When the set differs from the parent snapshot's, the commit is made even with an
+unchanged tree and names each one in a `submodule-changed` trailer; `LOG_FORMAT` reads
+those as a field, and the pane, the band and `last` say "Changes inside submodule X are
+not shown." Showing the diff itself would mean a shadow per submodule; nobody has asked.
+
 **The pane.** `ui.render` on `{ component: 'Pane', requestId: 'vero-diff' }`. State is one
 atom, `view` (`$.state`, typed by `types/index.d.ts`); the drawing only reads it, the
-handlers and events write it. Each file is a `<Code format="diff">`. Buttons Older /
+handlers and events write it. `reload()` reads the log and the shown step's diff first and
+writes steps, index and files in one `update` (`showing()`), so the pane never draws a new
+step's title over the old step's files. Turn numbers past one read of `LIMIT` (200)
+snapshots continue from `turnsBefore()`, a `rev-list --count` of the older `[post]`s. Each file is a `<Code format="diff">`. Buttons Older /
 Newer / Latest / Refresh, plus Hide on `e.surface === 'terminal'` only (the desktop has
 its own close mark). With more than one file the step opens with a list (`summary`):
 each name jumps to its file (`file:<path>` key, `$.ui.scroll`) and each file ends with
@@ -154,6 +177,10 @@ any of that come back.
   `tool.call` hooks without one: a hook that throws there would keep the pane open or
   fail the model's call. Fire-and-forget calls (`$.ui.scroll`) get `.catch` too, or a
   refusal becomes an unhandled rejection.
+- **`--scope project|local` writes to the current directory's `.claude/`.** Both
+  `claude plugin marketplace add` and `claude plugin install` take `--scope`, and both
+  write where they run. So `install.sh --scope project` takes the project's DIR and runs
+  there, and declares the GitHub marketplace, not the clone's path, which no teammate has.
 - **The mod API is early access.** The engine's own declaration says the surface may
   change between releases. Re-run `claude plugin validate` and `claude plugin test` against
   each new Claude Code release before cutting one of ours.
@@ -201,6 +228,12 @@ any of that come back.
 - **Cut text by characters, never with `cut -c`.** GNU `cut` counts bytes, so a Cyrillic
   prompt was split through a character and git showed the stray byte as `Ñ`. The module
   cuts (`promptLabel()`); `snapshot.sh` never shortens the label.
+- **Take a file's path from `rename to` / `+++ b/` / `--- a/`, never from the
+  `diff --git` header alone.** A path holding ` b/` splits the header in the wrong place,
+  a person's `diff.noprefix` or `diff.mnemonicPrefix` changes the prefixes, and `+++`
+  ends with a tab when the path holds a space. Every diff runs with `DIFF_OPTIONS`
+  (`--src-prefix=a/ --dst-prefix=b/`) and `core.quotePath=false`; `pathOf()` and
+  `unquote()` in `steps.ts` read the rest.
 - **A diff of a markdown file contains fences of its own.** `/vero-diff last` wraps the
   diff in a fence one backtick longer than the longest run inside it (`fenceFor()`).
 - **The desktop app draws a diff without syntax highlighting.** `<Code format="diff">`
@@ -228,6 +261,28 @@ any of that come back.
 
 **Shell and portability**
 
+- **git 2.22 is the floor.** `LOG_FORMAT`'s `%(trailers:key=...,valueonly,separator=...)`
+  arrived then; an older git prints the placeholder as text and every step would name a
+  "submodule". The README's Requirements says so.
+
+- **Clear inherited git variables, in the script and in the module.** A `GIT_DIR` or
+  `GIT_OBJECT_DIRECTORY` set by whoever started Claude Code (a git hook, a wrapper) is
+  inherited - `$.process.run`'s `env` is laid *over* the host's - and would send writes into
+  the project's own `.git`. `snapshot.sh` unsets the `--local-env-vars` list first;
+  `git()` in `register.tsx` runs `env -u ... git --git-dir=<shadow>`.
+- **One unreadable file aborts `git add -A`**, the index keeps its last state, and
+  `write-tree` then records that - a lost turn, or on a new session the empty tree that
+  makes turn 1 the whole project. Hence `--ignore-errors`, and no snapshot on `fatal:`.
+- **The shadow reads its own `info/exclude` and `config`, not the project's.** Hence the
+  copy and the `-c filter.*`; without them a `.env` excluded there was snapshotted and a
+  git-crypt file stored in plain text.
+- **Never loop in bash over every index entry.** `while read` over `git ls-files -s` cost
+  0.3 s on 20,000 files; `tr '\0' '\n' | grep '^160000 '` costs 5 ms. A snapshot of a
+  project with no submodules and no filters must stay near what 1.1.1 cost (0.05 s there,
+  0.10 s now, all of it fixed process starts).
+- **An empty array under `set -u` is "unbound" in bash 3.2.** Expand one that may be
+  empty as `${arr[@]+"${arr[@]}"}`.
+
 - **Target bash 3.2, not the bash you have**, in every `.sh` file. macOS still ships 3.2
   as `/bin/bash`, so `mapfile`/`readarray` and a fractional `read -t` are off limits.
   `tests/smoke.sh` greps for both, and the macOS CI job is the only place this is
@@ -251,7 +306,7 @@ any of that come back.
 Three checks, all run by CI, none needing an account or the network:
 
 ```bash
-tests/smoke.sh                              # snapshot.sh: 39 assertions, git + bash only
+tests/smoke.sh                              # snapshot.sh: 62 assertions, git + bash only
 claude plugin test ./plugins/vero-diff      # steps.ts and the pane, against the engine
 
 claude plugin validate .                    # marketplace catalog
@@ -270,10 +325,11 @@ committed: the declarations belong to one Claude Code build.
 The test kit runs with no fs, network or process. `tests/steps.test.ts` drives the
 `$`-free code directly; `tests/pane.test.ts` draws the pane through the engine on
 `terminal` and `desktop`, with hooks beneath the plugin standing in for the world
-(`fakeWorld()`): `process.run` answers as `snapshot.sh` and git would. Two rules learned
+(`fakeWorld()`): `process.run` answers as `snapshot.sh` and git would. Three rules learned
 writing it: an *op* beneath the plugin (`command.register`, `ui.open`, `session.id`,
 `process.run`, ...) answers `{ value }`, an *event* (`session.start`, `session.end`)
-answers its result; and `ui.scroll` cannot be observed - the kit lays nothing out, so a
+answers its result; every `on(...)` comes before the test's first `$` call, so one world
+per test (a loop of cases is a loop of tests); and `ui.scroll` cannot be observed - the kit lays nothing out, so a
 key never resolves to an offset. Keep parsing and rules in `hooks/steps.ts`; add a case
 for anything you fix; add a case to `tests/smoke.sh` for anything in `snapshot.sh`.
 

@@ -18,14 +18,18 @@ jobs:
     name: Plugin manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
 
+      # Deliberately the newest release: the mod API is early access, and a change in it
+      # should fail here before it reaches a user. The log names the version that ran.
       - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
 
       # `claude plugin validate` reads local files only - no account, no API key.
       - name: Validate the marketplace catalog
@@ -45,7 +49,7 @@ jobs:
     name: Shell lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Parse every script
         run: |
@@ -72,7 +76,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run the smoke test
         run: tests/smoke.sh
@@ -83,8 +87,14 @@ jobs:
     steps:
       # A clone with core.autocrlf=true is what a Windows user gets. Without
       # .gitattributes it hands them scripts that die on "/usr/bin/env: 'bash\r'".
-      - name: Clone the way a Windows user would
-        run: git -c core.autocrlf=true clone --depth 1 "${{ github.server_url }}/${{ github.repository }}" checkout
+      # The commit under test, not the default branch: for a pull request github.sha is
+      # its merge commit, which GitHub serves by hash.
+      - name: Check out the way a Windows user would
+        run: |
+          git init -q checkout
+          git -C checkout config core.autocrlf true
+          git -C checkout fetch -q --depth 1 "${{ github.server_url }}/${{ github.repository }}" "${{ github.sha }}"
+          git -C checkout checkout -q FETCH_HEAD
 
       - name: No CRLF reached the working tree
         working-directory: checkout

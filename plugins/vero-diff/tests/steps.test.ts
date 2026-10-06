@@ -1,13 +1,25 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { fenceFor, fitHunks, isShadowPath, languageOf, parseLog, promptLabel, splitFiles, stepSummary } from '../hooks/steps'
+import {
+  fenceFor,
+  fitHunks,
+  isShadowPath,
+  languageOf,
+  parentOfOldest,
+  parseLog,
+  promptLabel,
+  splitFiles,
+  stepSummary,
+  submoduleNote,
+  unquote,
+} from '../hooks/steps'
 
 // The log as `git log LOG_FORMAT` prints it, newest first: hash, parent, age, subject.
 const LOG = [
-  'c4\tc3\t1 minute ago\t[post] second turn',
-  'c3\tc2\t3 minutes ago\t[pre] second turn',
-  'c2\tc1\t5 minutes ago\t[post] first turn',
-  'c1\t\t9 minutes ago\t[pre] first turn',
+  'c4\tc3\t1 minute ago\t\t[post] second turn',
+  'c3\tc2\t3 minutes ago\t\t[pre] second turn',
+  'c2\tc1\t5 minutes ago\t\t[post] first turn',
+  'c1\t\t9 minutes ago\t\t[pre] first turn',
 ].join('\n')
 
 // Two files: a text edit (with a CRLF line) and a binary.
@@ -44,11 +56,60 @@ describe('parseLog', () => {
   })
 
   test('a session with only its first snapshot has no steps', () => {
-    expect(parseLog('c1\t\tnow\t[pre] hello\n')).toEqual([])
+    expect(parseLog('c1\t\tnow\t\t[pre] hello\n')).toEqual([])
+  })
+
+  test('a step names the submodules whose own work changed, and only such a step', () => {
+    const log = 'c3\tc2\tnow\tsub\x1flibs/b c\t[post] edit inside\nc2\tc1\tnow\t\t[post] plain\nc1\t\tnow\t\t[pre] plain'
+    expect(parseLog(log).map(step => step.submodules)).toEqual([['sub', 'libs/b c'], undefined])
+  })
+
+  test('turns older than the log go on counting', () => {
+    expect(parseLog(LOG, 198).map(step => step.turn)).toEqual([200, undefined, 199])
+  })
+
+  test('the oldest snapshot read names where an older history would go on', () => {
+    expect(parentOfOldest(LOG)).toBe('')
+    expect(parentOfOldest(LOG.split('\n').slice(0, 3).join('\n'))).toBe('c1')
   })
 })
 
 describe('splitFiles', () => {
+  const pathsOf = (diff: string) => splitFiles(diff).map(file => file.path)
+
+  test('a path holding " b/" is named whole', () => {
+    const diff = 'diff --git a/docs/a b/x.md b/docs/a b/x.md\n--- a/docs/a b/x.md\t\n+++ b/docs/a b/x.md\t\n@@ -1 +1 @@\n-x\n+y\n'
+    expect(pathsOf(diff)).toEqual(['docs/a b/x.md'])
+  })
+
+  test('a deleted, a renamed, a mode-changed and a new binary file are named', () => {
+    const diff = [
+      'diff --git a/gone.txt b/gone.txt',
+      'deleted file mode 100644',
+      '--- a/gone.txt',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-bye',
+      'diff --git a/old name.md b/new name.md',
+      'similarity index 100%',
+      'rename from old name.md',
+      'rename to new name.md',
+      'diff --git a/run b/run',
+      'old mode 100644',
+      'new mode 100755',
+      'diff --git a/a b/c.png b/a b/c.png',
+      'new file mode 100644',
+      'Binary files /dev/null and b/a b/c.png differ',
+      '',
+    ].join('\n')
+    expect(pathsOf(diff)).toEqual(['gone.txt', 'new name.md', 'run', 'a b/c.png'])
+  })
+
+  test('a quoted path reads as itself', () => {
+    const diff = 'diff --git "a/q\\"t.txt" "b/q\\"t.txt"\nnew file mode 100644\n--- /dev/null\n+++ "b/q\\"t.txt"\n@@ -0,0 +1 @@\n+q\n'
+    expect(pathsOf(diff)).toEqual(['q"t.txt'])
+    expect(pathsOf('diff --git "a/\\321\\217.bin" "b/\\321\\217.bin"\nold mode 100644\nnew mode 100755\n')).toEqual(['я.bin'])
+  })
 
   test('one entry per file, hunks only, no carriage returns', () => {
     const [text, image] = splitFiles(DIFF)
@@ -116,6 +177,14 @@ describe('stepSummary', () => {
     expect(stepSummary(outside, splitFiles(DIFF).slice(0, 1))?.count).toBe('1 file')
     expect(stepSummary(undefined, [])).toBe(undefined)
   })
+
+  test('counts submodules beside files, and alone when no file changed', () => {
+    const step = { sha: 's', parent: 'p', when: 'now', title: 't', turn: 3, submodules: ['sub'] }
+    expect(stepSummary(step, splitFiles(DIFF))?.count).toBe('2 files + 1 submodule')
+    expect(stepSummary(step, [])?.count).toBe('1 submodule')
+    expect(stepSummary({ ...step, submodules: ['a', 'b'] }, [])?.count).toBe('2 submodules')
+    expect(submoduleNote('sub')).toBe('Changes inside submodule sub are not shown.')
+  })
 })
 
 describe('promptLabel', () => {
@@ -143,6 +212,19 @@ describe('languageOf', () => {
     expect(languageOf('Makefile')).toBe(undefined)
     expect(languageOf('.gitignore')).toBe(undefined)
     expect(languageOf('notes.weird')).toBe(undefined)
+  })
+})
+
+describe('unquote', () => {
+  test('reads git\'s C-style quoting, octal bytes as UTF-8', () => {
+    expect(unquote('"a\\tb"')).toBe('a\tb')
+    expect(unquote('"\\303\\251t\\303\\251"')).toBe('été')
+    expect(unquote('"say \\"hi\\" \\\\ 😀"')).toBe('say "hi" \\ 😀')
+  })
+
+  test('leaves an unquoted path, or bytes that are not UTF-8, as they came', () => {
+    expect(unquote('plain/path.txt')).toBe('plain/path.txt')
+    expect(unquote('"\\377"')).toBe('"\\377"')
   })
 })
 

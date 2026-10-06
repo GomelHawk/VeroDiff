@@ -13,9 +13,15 @@ tests/smoke.sh
 ```
 
 It asserts the promises `snapshot.sh` makes: that a snapshot never adds an object to the
-project's own `.git`, that `.gitignore` is honoured, that a turn which changes nothing
-records nothing, that pruning drops only stale sessions, and that the script exits 0
-even outside a git repository.
+project's own `.git`, not even with a `GIT_OBJECT_DIRECTORY` inherited from a parent
+process; that `.gitignore`, `.git/info/exclude` and the project's clean filters are
+honoured, and a file whose filter is defined nowhere left out; that a turn which changed
+only a submodule's uncommitted work is a step that names it, without writing to the
+submodule's own `.git`; that an unreadable file costs only itself, never the turn; that a
+turn which changes nothing records nothing; that pruning drops only stale sessions and
+the old files no session owns; and that the script exits 0 even outside a git repository.
+It also checks that the plugin's copies of `README.md` and `LICENSE` match the
+repository's.
 
 The second runs the pane's TypeScript against Claude Code's own engine - still no account
 and no network:
@@ -25,9 +31,12 @@ claude plugin test ./plugins/vero-diff
 ```
 
 It covers how steps are named and numbered (no internal `[pre]`/`[post]` marker may reach
-a user), how a diff is split and cut per file, the band above the prompt, which paths
-`/vero-diff purge` will delete, and the pane itself, drawn on both the terminal and the
-desktop surface: its navigation, the file list, Hide, and what `/clear` does to it.
+a user, and numbers hold past one read of 200 snapshots), how a diff is split and cut per
+file and how each file's path is read, how a step names a changed submodule, the band
+above the prompt, `/vero-diff last [N]` and how it cuts a long diff, Refresh after the
+history shrank, what `/vero-diff purge` deletes and what it refuses, and the pane itself,
+drawn on both the terminal and the desktop surface: its navigation, the file list, Hide,
+and what `/clear` does to it.
 
 Then validate the structure. The two runs check different things - the marketplace
 catalog, and the plugin's own manifest, hooks and component directories:
@@ -74,7 +83,7 @@ the cache, so your edits apply at the next `/reload-plugins` with no version bum
 | **Plugin manifests** | all three `claude plugin validate` runs, `--strict` included, and `claude plugin test` |
 | **Shell lint** | `bash -n` and ShellCheck (`-S warning`) over every script |
 | **Smoke** | `tests/smoke.sh` on Linux *and* macOS - macOS matters, because `snapshot.sh` takes its `md5 -q` branch there rather than `md5sum` |
-| **Line endings** | re-clones with `core.autocrlf=true`, the Windows default, and proves the scripts still have LF endings, are executable, and run |
+| **Line endings** | checks out the commit under test - a pull request's own, not `main` - with `core.autocrlf=true`, the Windows default, and proves the scripts still have LF endings, are executable, and run |
 
 ## Share it
 

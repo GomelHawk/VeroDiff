@@ -73,6 +73,16 @@ else
   no "hooks.json names only the hooks module" "the module takes the snapshots; a command hook would double them"
 fi
 
+# The plugin directory carries its own copies of the README and LICENSE: a marketplace
+# install sees only that directory. Byte for byte the same as the repository's, or one
+# of them has gone stale.
+# Compared without carriage returns: .gitattributes owns the endings, and a checkout made
+# before it existed may still hold CRLF in one copy while git stores both alike.
+for f in README.md LICENSE; do
+  cmp -s <(tr -d '\r' < "$ROOT/$f") <(tr -d '\r' < "$ROOT/plugins/vero-diff/$f") && ok "$f is the same in the plugin" \
+    || no "$f is the same in the plugin" "edit both, or copy one over the other"
+done
+
 # claude.ai organization distribution rejects a plugin with a top-level bin/.
 [ ! -e "$ROOT/plugins/vero-diff/bin" ] && ok "no top-level bin/ in the plugin" \
   || no "no top-level bin/ in the plugin" "organization distribution rejects it"
@@ -98,8 +108,9 @@ export CLAUDE_PROJECT_DIR="$REPO"
 # The shadow repository, located the way snapshot.sh and the pane both locate it: keyed
 # on git's toplevel, which on macOS is /private/var/... while mktemp said /var/...
 TOP="$(git rev-parse --show-toplevel)"
-if command -v md5sum >/dev/null 2>&1; then key="$(printf '%s' "$TOP" | md5sum | cut -c1-12)"
-else key="$(printf '%s' "$TOP" | md5 -q | cut -c1-12)"; fi
+if command -v md5sum >/dev/null 2>&1;  then key="$(printf '%s' "$TOP" | md5sum | cut -c1-12)"
+elif command -v md5 >/dev/null 2>&1;   then key="$(printf '%s' "$TOP" | md5 -q | cut -c1-12)"
+else key="$(printf '%s' "$TOP" | cksum | cut -d' ' -f1)"; fi
 export SHADOW="$VERODIFF_DIR/project-$key.git"
 REF="refs/verodiff/session/smoke"
 shadow() { GIT_DIR="$SHADOW" git "$@"; }
@@ -185,12 +196,142 @@ hasnt "a session idle past the limit is dropped" "$(shadow for-each-ref --format
   || no "its index and label go with it"
 has "a recent session is kept"               "$(shadow for-each-ref --format='%(refname)')" 'session/smoke'
 
+# Files with no ref beside them: an old index and label, a lock a killed git left, a fresh
+# label that may belong to a session taking its first snapshot right now, and the asking
+# session's own.
+for f in index-ghost label-ghost index-ghost2.lock label-fresh index-asker; do : > "$SHADOW/$f"; done
+touch -t 202001010000 "$SHADOW/index-ghost" "$SHADOW/label-ghost" "$SHADOW/index-ghost2.lock" "$SHADOW/index-asker" \
+  "$SHADOW/index-smoke"     # old, but its session still has a ref
+VERODIFF_SESSION_ID=asker "$SNAP" prune 30 </dev/null
+[ ! -e "$SHADOW/index-ghost" ] && [ ! -e "$SHADOW/label-ghost" ] && [ ! -e "$SHADOW/index-ghost2.lock" ] \
+  && ok "an old index, label or lock with no session is dropped" \
+  || no "an old index, label or lock with no session is dropped"
+[ -e "$SHADOW/label-fresh" ] && ok "a fresh one is kept" || no "a fresh one is kept"
+[ -e "$SHADOW/index-asker" ] && ok "the asking session's own is kept" || no "the asking session's own is kept"
+[ -e "$SHADOW/index-smoke" ] && ok "an old index whose session has a ref is kept" || no "an old index whose session has a ref is kept"
+rm -f "$SHADOW/label-fresh" "$SHADOW/index-asker"
+
 # The module passes the prompt and session id in the environment; no JSON to parse.
 if grep -qE '^[^#]*\b(jq|python3?)\b' "$SNAP"; then
   no "snapshot.sh needs no jq or python" "found a jq/python call"
 else
   ok "snapshot.sh needs no jq or python"
 fi
+
+echo
+echo "== what the project's own .git says =="
+
+# Each case runs in a session of its own, so the history checked above stays as it was.
+# in_session SID KIND [PROMPT] - one snapshot, as the module would take it for SID.
+in_session() { VERODIFF_SESSION_ID="$1" VERODIFF_PROMPT="${3:-}" "$SNAP" "$2" </dev/null; }
+tip() { shadow rev-parse "refs/verodiff/session/$1"; }
+
+# A file excluded only in .git/info/exclude stays out, as it does for git itself.
+printf 'private.env\n' >> "$REPO/.git/info/exclude"
+printf 'TOKEN=1\n' > "$REPO/private.env"
+in_session excl pre "exclude"
+hasnt ".git/info/exclude is honoured" "$(shadow ls-tree -r --name-only "$(tip excl)")" "private.env"
+
+# A clean filter defined in the project's .git/config runs, so what it hides stays hidden.
+git config filter.rot13.clean "tr a-z n-za-m"
+git config filter.rot13.smudge "tr a-z n-za-m"
+printf '*.sec filter=rot13\n' > "$REPO/.gitattributes"
+printf 'plain\n' > "$REPO/key.sec"
+in_session filt pre "filter"
+is "the project's clean filter is applied" "$(shadow cat-file -p "$(tip filt):key.sec")" "cynva"
+rm -f "$REPO/.gitattributes" "$REPO/key.sec"
+git config --unset filter.rot13.clean; git config --unset filter.rot13.smudge
+
+# One defined through include.path counts as well: `git config --local` alone misses it.
+printf '[filter "rot13"]\n\tclean = tr a-z n-za-m\n' > "$WORK/filters.inc"
+git config include.path "$WORK/filters.inc"
+printf '*.sec filter=rot13\n' > "$REPO/.gitattributes"
+printf 'plain\n' > "$REPO/key.sec"
+in_session incl pre "include"
+is "a filter from an included config is applied" "$(shadow cat-file -p "$(tip incl):key.sec")" "cynva"
+git config --unset include.path
+
+# A filter named but defined nowhere would store the file as it is: it is left out, and
+# one the session's index already held is taken off it.
+printf '*.sec filter=rot13\n*.vault filter=nowhere\n' > "$REPO/.gitattributes"
+printf 'secret\n' > "$REPO/[odd] name.vault"
+in_session incl pre "undefined"
+names="$(shadow ls-tree -r --name-only "$(tip incl)")"
+hasnt "a file whose filter is defined nowhere is left out" "$names" "name.vault"
+hasnt "and so is one that was snapshotted before"          "$names" "key.sec"
+has   "the rest is still taken"                           "$names" "a.txt"
+rm -f "$REPO/.gitattributes" "$REPO/key.sec" "$REPO/[odd] name.vault"
+
+# A git variable inherited from a parent process never points a snapshot at the project.
+objects > "$WORK/objects.before"
+GIT_OBJECT_DIRECTORY="$REPO/.git/objects" in_session envs pre "env"
+printf 'zeta\n' >> "$REPO/a.txt"
+GIT_OBJECT_DIRECTORY="$REPO/.git/objects" in_session envs post
+objects > "$WORK/objects.after"
+is "an inherited GIT_OBJECT_DIRECTORY writes nothing to .git" \
+  "$(LC_ALL=C comm -13 "$WORK/objects.before" "$WORK/objects.after")" ""
+has "and the snapshot still lands in the shadow" "$(shadow log -1 --format=%s refs/verodiff/session/envs)" '^\[post\] env'
+
+# A turn begun with no prompt text is not labelled with the previous turn's prompt.
+in_session label pre "labelled turn"
+printf 'eta\n' >> "$REPO/a.txt"; in_session label post
+in_session label pre ""
+printf 'theta\n' >> "$REPO/a.txt"; in_session label post
+is "an empty prompt starts its own label" "$(shadow log -1 --format=%s refs/verodiff/session/label)" "[post] (no prompt)"
+
+# A file git cannot read costs that file, never the turn - and never makes a new
+# session's first snapshot the empty tree, which would show turn 1 as the whole project.
+printf 'locked\n' > "$REPO/locked.bin"; chmod 000 "$REPO/locked.bin"
+if [ -r "$REPO/locked.bin" ]; then
+  echo "  skip  unreadable files (running as root: mode 000 is still readable)"
+else
+  in_session lock pre "unreadable"
+  has "a new session's first snapshot is the tree, not empty" \
+    "$(shadow ls-tree --name-only "$(tip lock)")" "a.txt"
+  printf 'iota\n' >> "$REPO/a.txt"
+  in_session lock post
+  has "the turn's edits are recorded beside an unreadable file" \
+    "$(shadow diff --no-color "$(tip lock)^" "$(tip lock)")" "+iota"
+fi
+chmod 644 "$REPO/locked.bin"; rm -f "$REPO/locked.bin"
+
+echo
+echo "== submodules =="
+
+# A repository inside the project is a gitlink: its uncommitted work is in no tree, so a
+# turn that changes only that gets a step of its own that says where the change was.
+mkdir -p "$REPO/sub"
+( cd "$REPO/sub" && git init -q && git config user.email s@t && git config user.name s \
+    && git config core.autocrlf input && printf 'one\n' > s.txt && git add s.txt && git commit -qm s )
+subgit() { find "$REPO/sub/.git" -type f -exec cksum {} + | LC_ALL=C sort; }
+subgit > "$WORK/subgit.before"
+in_session subm pre "set up"
+in_session subm post
+before="$(shadow rev-list --count refs/verodiff/session/subm)"
+in_session subm pre "edit inside the submodule"
+printf 'two\n' >> "$REPO/sub/s.txt"
+in_session subm post
+is "a turn that changed only a submodule is a step" \
+  "$(shadow rev-list --count refs/verodiff/session/subm)" "$((before + 1))"
+is "and names it" \
+  "$(shadow log -1 --format='%(trailers:key=submodule-changed,valueonly)' refs/verodiff/session/subm | sed '/^$/d')" "sub"
+in_session subm pre "a question, no edits"
+in_session subm post
+is "an unchanged dirty submodule adds no step" \
+  "$(shadow rev-list --count refs/verodiff/session/subm)" "$((before + 1))"
+in_session subm pre "edit the project only"
+printf 'kappa\n' >> "$REPO/a.txt"
+in_session subm post
+is "nor is it named on a turn that did not touch it" \
+  "$(shadow log -1 --format='%(trailers:key=submodule-changed,valueonly)' refs/verodiff/session/subm | sed '/^$/d')" ""
+printf 'new\n' > "$REPO/sub/untracked.txt"
+in_session subm pre "add an untracked file inside"
+is "an untracked file inside counts too" \
+  "$(shadow log -1 --format='%(trailers:key=submodule-changed,valueonly)' refs/verodiff/session/subm | sed '/^$/d')" "sub"
+subgit > "$WORK/subgit.after"
+cmp -s "$WORK/subgit.before" "$WORK/subgit.after" && ok "the submodule's own .git is never written to" \
+  || no "the submodule's own .git is never written to" "$(diff "$WORK/subgit.before" "$WORK/subgit.after" | head -3)"
+rm -rf "$REPO/sub"
 
 echo
 echo "== the hook never fails a turn =="

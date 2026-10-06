@@ -1,8 +1,21 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { View } from '../types'
-import { LOG_FORMAT, clean, fenceFor, isShadowPath, languageOf, parseLog, promptLabel, splitFiles, stepSummary } from './steps'
+import type { FileDiff, Step, View } from '../types'
+import {
+  DIFF_OPTIONS,
+  LOG_FORMAT,
+  clean,
+  fenceFor,
+  isShadowPath,
+  languageOf,
+  parentOfOldest,
+  parseLog,
+  promptLabel,
+  splitFiles,
+  stepSummary,
+  submoduleNote,
+} from './steps'
 
 // VeroDiff: snapshot the working tree at both ends of a turn (scripts/snapshot.sh) and
 // draw the diff of each turn in a pane. Snapshots live in a bare repository outside the
@@ -58,8 +71,20 @@ async function shadowOf($: EngineInterface): Promise<string> {
   return (await script($, ['where'])).stdout.trim()
 }
 
+// The variables `git rev-parse --local-env-vars` lists. The child inherits Claude Code's
+// own environment, and one of these set there (by a git hook that started it, say) would
+// send these reads to some other repository's objects.
+const GIT_LOCAL_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_REPLACE_REF_BASE', 'GIT_PREFIX',
+  'GIT_SHALLOW_FILE', 'GIT_COMMON_DIR',
+]
+
+// Paths come back unquoted (core.quotePath=false), so a non-ASCII name reads as itself.
 async function git($: EngineInterface, shadow: string, args: string[]) {
-  return $.process.run(['git', ...args], { env: { GIT_DIR: shadow } })
+  const unset = GIT_LOCAL_VARS.flatMap(name => ['-u', name])
+  return $.process.run(['env', ...unset, 'git', `--git-dir=${shadow}`, '-c', 'core.quotePath=false', ...args])
 }
 
 async function snapshot($: EngineInterface, kind: 'pre' | 'post', prompt = '') {
@@ -98,21 +123,35 @@ async function setBandHidden($: EngineInterface, isHidden: boolean) {
   await update($, view, cur => ({ ...cur, isBandHidden: isHidden }))
 }
 
+async function filesOf($: EngineInterface, shadow: string, step: Step): Promise<FileDiff[]> {
+  const out = await git($, shadow, ['diff', ...DIFF_OPTIONS, step.parent, step.sha])
+  return splitFiles(out.stdout)
+}
+
+// The fields that show one step, as a single write. Folding is for reviewing the step on
+// screen. Showing another step - by Older, Newer, Latest, or a new turn landing - means
+// this one is accepted, so the folds go; the same step read again (Refresh, `last`, the
+// model's tool) keeps them.
+function showing(cur: View, index: number, step: Step | undefined, files: FileDiff[]): Partial<View> {
+  const sha = step?.sha ?? ''
+  return { index, shownSha: sha, files, collapsed: sha !== '' && cur.shownSha === sha ? cur.collapsed : [] }
+}
+
 async function loadStep($: EngineInterface, index: number) {
   const v = await read($, view)
   const step = v.steps[index]
   if (!step) return
-  const out = await git($, v.shadow, ['diff', '--no-color', '--no-ext-diff', '-M', step.parent, step.sha])
-  // Folding is for reviewing the step on screen. Showing another step - by Older, Newer,
-  // Latest, or a new turn landing - means this one is accepted, so the folds go; the
-  // same step read again (Refresh, `last`, the model's tool) keeps them.
-  await update($, view, cur => ({
-    ...cur,
-    index,
-    shownSha: step.sha,
-    files: splitFiles(out.stdout),
-    collapsed: cur.shownSha === step.sha ? cur.collapsed : [],
-  }))
+  const files = await filesOf($, v.shadow, step)
+  await update($, view, cur => ({ ...cur, ...showing(cur, index, step, files) }))
+}
+
+// Turns older than the newest LIMIT snapshots, so that turn numbers do not shift once a
+// session has taken more snapshots than one read holds.
+async function turnsBefore($: EngineInterface, shadow: string, log: string): Promise<number> {
+  const parent = parentOfOldest(log)
+  if (parent === '' || log.split('\n').filter(Boolean).length < LIMIT) return 0
+  const count = await git($, shadow, ['rev-list', '--count', '--grep=^\\[post\\] ', parent])
+  return count.exitCode === 0 ? Number(count.stdout.trim()) || 0 : 0
 }
 
 async function reload($: EngineInterface, jumpToLatest: boolean) {
@@ -124,21 +163,14 @@ async function reload($: EngineInterface, jumpToLatest: boolean) {
     }
     const sid = await $.session.id()
     const log = await git($, shadow, ['log', `--max-count=${LIMIT}`, LOG_FORMAT, `refs/verodiff/session/${sid}`])
-    const steps = log.exitCode === 0 ? parseLog(log.stdout) : []
+    const steps = log.exitCode === 0 ? parseLog(log.stdout, await turnsBefore($, shadow, log.stdout)) : []
     const prev = await read($, view)
     const index = jumpToLatest ? 0 : Math.min(prev.index, Math.max(0, steps.length - 1))
-    // The files stay as they are until the step's own arrive: emptying them first
-    // would flash "No changes in this step." on every reload.
-    await update($, view, cur => ({
-      ...cur,
-      shadow,
-      steps,
-      files: steps.length === 0 ? [] : cur.files,
-      collapsed: steps.length === 0 ? [] : cur.collapsed,
-      isLoading: false,
-      error: '',
-    }))
-    await loadStep($, index)
+    const step = steps[index]
+    const files = step ? await filesOf($, shadow, step) : []
+    // One write: the step list, which step is shown and its files arrive together, so the
+    // pane never draws a new step's title over the old step's files in between.
+    await update($, view, cur => ({ ...cur, shadow, steps, ...showing(cur, index, step, files), isLoading: false, error: '' }))
     await rememberLatest($)
   } catch (err) {
     await update($, view, cur => ({ ...cur, isLoading: false, error: String(err) }))
@@ -159,11 +191,14 @@ async function lastDiff($: EngineInterface, arg: string): Promise<string> {
   const step = v.steps[n - 1]
   if (!step) return `No such step: ${arg}.`
   const range = [step.parent, step.sha]
-  const stat = await git($, v.shadow, ['diff', '--no-color', '-M', '--stat=100', ...range])
-  const out = await git($, v.shadow, ['diff', '--no-color', '--no-ext-diff', '-M', ...range])
-  const head = `**${step.title}**  ·  step ${n} of ${v.steps.length}  ·  ${step.when}`
+  const stat = await git($, v.shadow, ['diff', ...DIFF_OPTIONS, '--stat=100', ...range])
+  const out = await git($, v.shadow, ['diff', ...DIFF_OPTIONS, ...range])
+  const head = [
+    `**${step.title}**  ·  step ${n} of ${v.steps.length}  ·  ${step.when}`,
+    ...(step.submodules ?? []).map(path => `_${submoduleNote(path)}_`),
+  ].join('\n\n')
   let diff = clean(out.stdout).replace(/\n$/, '')
-  if (!diff) return `${head}\n\nNo changes in this step.`
+  if (!diff) return step.submodules ? head : `${head}\n\nNo changes in this step.`
   let note = ''
   if (diff.length > MAX_INLINE_CHARS) {
     diff = diff.slice(0, diff.lastIndexOf('\n', MAX_INLINE_CHARS))
@@ -422,7 +457,12 @@ export const register: Register = on => {
           {hide}
         </Box>
 
-        {v.files.length === 0 && <Text dimColor>No changes in this step.</Text>}
+        {v.files.length === 0 && !step.submodules && <Text dimColor>No changes in this step.</Text>}
+        {step.submodules?.map(path => (
+          <Text key={`submodule:${path}`} dimColor>
+            {submoduleNote(path)}
+          </Text>
+        ))}
 
         {hasSummary && (
           <Box key="summary" flexDirection="column">

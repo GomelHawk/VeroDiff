@@ -1,11 +1,13 @@
 // One step of a session: a snapshot and the parent it is diffed against. `turn` is the
-// turn number for a finished turn, absent for edits made outside one.
+// turn number for a finished turn, absent for edits made outside one. `submodules` names
+// the submodules whose uncommitted work changed in the step - work no diff can show.
 export type Step = {
   sha: string
   parent: string
   when: string
   title: string
   turn?: number
+  submodules?: string[]
 }
 
 // One file of a step's diff, hunks only: the path is drawn above them. `adds` and

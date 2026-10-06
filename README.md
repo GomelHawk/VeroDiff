@@ -67,11 +67,21 @@ opens the VeroDiff pane.
 ```bash
 git clone https://github.com/GomelHawk/VeroDiff
 cd VeroDiff
-./install.sh                    # or: ./install.sh --scope project, to share it with a team
+./install.sh                                    # for you, in every project
+./install.sh --scope project ~/work/our-app     # for everyone who works in our-app
 ```
 
-`--scope project` writes the plugin into the repository's `.claude/settings.json`, so
-everyone who trusts that folder gets VeroDiff without installing anything themselves.
+`--scope project DIR` writes VeroDiff into `DIR/.claude/settings.json` - the GitHub
+marketplace and the plugin, never the path of your clone - so once that file is committed,
+everyone who trusts the folder gets VeroDiff without installing anything themselves.
+`--scope local DIR` does the same in `DIR/.claude/settings.local.json`, for you alone.
+
+Without the clone, the same team install is two commands run inside that project:
+
+```bash
+claude plugin marketplace add GomelHawk/VeroDiff --scope project
+claude plugin install vero-diff@verodiff-marketplace --scope project
+```
 </details>
 
 ## Your first diff
@@ -186,8 +196,17 @@ explicitly when there is nothing newer.
 
 Not in your project. Each project gets its own bare repository under `~/.cache/verodiff/`,
 and the snapshot script points `GIT_DIR` there while pointing `GIT_WORK_TREE` at your project. Git
-reads your files and honours `.gitignore`, but writes every object into the cache. Your
-`.git`, `git status`, `git log --all` and `git push` are untouched.
+reads your files and honours `.gitignore` and `.git/info/exclude`, but writes every object
+into the cache. Your `.git`, `git status`, `git log --all` and `git push` are untouched.
+Clean filters defined in your repository's config run too, so a file git-crypt or
+transcrypt keeps encrypted is stored encrypted. A file whose filter is named in
+`.gitattributes` but defined nowhere is left out of snapshots altogether rather than
+stored as it sits on disk. A file git cannot read is left out too; the rest of the turn is
+still recorded.
+
+Everything git would track is copied, untracked files included. Keep large generated
+files, such as a dev database or a dataset, in `.gitignore` or `.git/info/exclude`, or
+each turn that touches one stores another copy. Snapshots are packed as they pile up.
 
 Override the location with `VERODIFF_DIR`.
 
@@ -203,12 +222,30 @@ history. What they can't avoid is sharing a working tree: if both sessions edit 
 the same checkout during the same turn, both sets of edits appear in the diff. For real
 isolation, give each session its own `git worktree`.
 
+## Submodules
+
+A submodule - or any repository nested inside the project - is recorded the way git
+records it in your repository: as the commit it points to. Its uncommitted edits cannot be
+shown as a diff, so a step whose turn changed them says so instead:
+
+```
+Changes inside submodule libs/ui are not shown.
+```
+
+A turn that changed only a submodule is still a step, with that line and no diff. Look
+inside with `git -C libs/ui diff`.
+
 ## Uninstall
 
 ```bash
-./uninstall.sh            # removes the plugin, keeps snapshots
-./uninstall.sh --purge    # also deletes every snapshot cache
+./uninstall.sh                                  # removes the plugin, keeps snapshots
+./uninstall.sh --scope project ~/work/our-app   # removes a project install
+./uninstall.sh --purge                          # also deletes every project's snapshots
 ```
+
+`--purge` lists the snapshot stores it found and asks before deleting them (`-y` skips the
+question). It deletes only the stores VeroDiff made, never anything else that shares the
+folder `VERODIFF_DIR` points at.
 
 `claude plugin uninstall` removes the plugin on its own - there is no settings file to
 clean up by hand.
@@ -225,15 +262,16 @@ clean up by hand.
 | `n` / `p` do nothing | The keys belong to the pane once it has the focus: click it, or `Ctrl+x` then `Tab`. The buttons always work. |
 | A turn shows edits you did not ask for | Either you changed files yourself between turns - those appear as `edits outside a turn` - or a second session shares this working tree. See [Concurrent sessions](#concurrent-sessions). |
 | A turn you expected is missing | A turn that changed nothing records no step, by design. |
+| `Changes inside submodule ... are not shown.` | The turn changed uncommitted work inside a submodule, which no snapshot holds. See [Submodules](#submodules). |
 | No syntax colours in the desktop app | The desktop app colours a diff by added and removed lines only; the terminal also highlights the code. That is Claude Code's drawing, not a setting. |
 | A step is cut short | One file's diff is cut to whole hunks of about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
-| Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. |
+| Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. Large files that are not ignored are copied on every turn that changes them; ignore them (see [Where snapshots live](#where-snapshots-live)). |
 
 ## Requirements
 
 A Claude Code release that runs plugin hooks modules - VeroDiff 1.1 is tested against
-2.1.288 - plus git and bash, including the bash 3.2 that macOS ships. Nothing else needs
-installing.
+2.1.288 - plus git 2.22 or newer and bash, including the bash 3.2 that macOS ships.
+Nothing else needs installing.
 
 ## Upgrading from 0.1.x
 

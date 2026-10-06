@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 // The pane drawn through the engine on both surfaces it lives on. The test has no
@@ -7,9 +8,9 @@ import type { On } from 'claude-code'
 
 const SHADOW = '/cache/repo-0123456789ab.git'
 const LOG = [
-  'c3\tc2\t1 minute ago\t[post] rename the helper',
-  'c2\tc1\t4 minutes ago\t[post] add a word to a.txt',
-  'c1\t\t9 minutes ago\t[pre] add a word to a.txt',
+  'c3\tc2\t1 minute ago\t\t[post] rename the helper',
+  'c2\tc1\t4 minutes ago\t\t[post] add a word to a.txt',
+  'c1\t\t9 minutes ago\t\t[pre] add a word to a.txt',
 ].join('\n')
 const DIFFS: Record<string, string> = {
   c3: [
@@ -26,14 +27,27 @@ const DIFFS: Record<string, string> = {
   c2: ['diff --git a/a.txt b/a.txt', '@@ -1,1 +1,2 @@', ' helper', '+thicket', ''].join('\n'),
 }
 
-const ok = (stdout: string) => ({
-  value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+const ok = (stdout: string, exitCode = 0) => ({
+  value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
+// How the world differs from a plain session with two turns: what `snapshot.sh where`
+// says, what git says of that path, the log it holds, and how many turns came before it.
+// Read on every call, so a test can change it between two reads.
+type World = {
+  shadow?: string
+  bare?: 'true' | 'false' | 'missing'
+  log?: string
+  diffs?: Record<string, string>
+  turnsBefore?: number
+}
+
 // Everything beneath the plugin that a session would answer, from memory. Returns what
-// the plugin asked of the world: the panes it opened and the toasts it showed.
-function fakeWorld(on: On, store: Record<string, unknown> = {}) {
-  const seen = { opened: [] as string[], toasts: [] as string[] }
+// the plugin asked of the world: the panes it opened, the toasts it showed, the commands
+// it ran.
+function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {}) {
+  const seen = { opened: [] as string[], toasts: [] as string[], ran: [] as string[][] }
+  const shadow = world.shadow ?? SHADOW
   mock.store(on, store)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -49,14 +63,32 @@ function fakeWorld(on: On, store: Record<string, unknown> = {}) {
   on('session.id', () => ({ value: 'S1' }))
   on('session.root', () => ({ value: '/repo' }))
   on('process.run', ($, e) => {
+    seen.ran.push([...e.argv])
     const [cmd, , kind] = e.argv
-    if (cmd === 'bash') return ok(kind === 'where' ? `${SHADOW}\n` : '')
-    if (e.argv[1] === 'log') return ok(`${LOG}\n`)
-    if (e.argv[1] === 'diff') return ok(DIFFS[e.argv[e.argv.length - 1] ?? ''] ?? '')
+    if (cmd === 'bash') return ok(kind === 'where' ? `${shadow}\n` : '')
+    if (cmd === 'du') return ok(`12K\t${shadow}\n`)
+    // git runs as `env -u ... git --git-dir=<shadow> -c core.quotePath=false <subcommand> ...`
+    const git = e.argv.slice(e.argv.indexOf('git') + 1)
+    const sub = git.find(arg => ['log', 'diff', 'rev-list', 'rev-parse'].includes(arg))
+    if (sub === 'log') return ok(`${world.log ?? LOG}\n`)
+    if (sub === 'diff') return ok((world.diffs ?? DIFFS)[git[git.length - 1] ?? ''] ?? '')
+    if (sub === 'rev-list') return ok(`${world.turnsBefore ?? 0}\n`)
+    if (sub === 'rev-parse') {
+      const bare = world.bare ?? 'true'
+      return bare === 'missing' ? ok('', 128) : ok(`${bare}\n`)
+    }
     return ok('')
   })
   return seen
 }
+
+const run = ($: Parameters<TestBody>[0], args: string) =>
+  $.command.run({
+    command: 'vero-diff',
+    args,
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
 
 const BAND = {
   hasSurvey: false,
@@ -219,16 +251,119 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeUndefined()
       expect(await band.find({ key: 'hide-band' })).toBeUndefined()
 
-      const shown = await $.command.run({
-        command: 'vero-diff',
-        args: 'band',
-        origin: { kind: 'composer' },
-        presentation: { isFullscreen: true, columns: 120 },
-      })
+      const shown = await run($, 'band')
       expect(shown.text?.startsWith('VeroDiff row above the prompt is back')).toBe(true)
       expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
       expect(seen.toasts).toEqual([])
     })
+
+    test('/vero-diff last [N] prints a step, counting as the pane does', async ($, on) => {
+      fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+
+      const newest = (await run($, 'last')).text ?? ''
+      expect(newest.startsWith('**turn 2  "rename the helper"**  ·  step 1 of 2')).toBe(true)
+      expect(newest.includes('+assist')).toBe(true)
+      expect((await run($, 'last 2')).text?.startsWith('**turn 1  "add a word to a.txt"**  ·  step 2 of 2')).toBe(true)
+      expect((await run($, 'last 3')).text).toBe('No such step: 3 (this session has 2).')
+      expect((await run($, 'last x')).text).toBe('No such step: x (this session has 2).')
+      expect((await run($, 'last 0')).text).toBe('No such step: 0 (this session has 2).')
+    })
+
+    test('/vero-diff last cuts a long diff on a line, says so, and still closes its fence', async ($, on) => {
+      const lines = Array.from({ length: 3000 }, (_, i) => `+line ${i} ${'x'.repeat(30)}`)
+      const big = ['diff --git a/big.txt b/big.txt', '@@ -0,0 +1,3000 @@', ...lines, ''].join('\n')
+      fakeWorld(on, {}, { log: 'b2\tb1\tnow\t\t[post] write a big file\nb1\t\tnow\t\t[pre] write a big file', diffs: { b2: big } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+
+      const text = (await run($, 'last')).text ?? ''
+      expect(big.length > 60000).toBe(true)
+      expect(text.endsWith('```\n\n_Cut: the rest of this diff is in the pane._')).toBe(true)
+      const body = text.slice(text.indexOf('```diff\n') + 8, text.lastIndexOf('\n```'))
+      expect(body.length <= 60000).toBe(true)
+      // cut between lines, never through one
+      expect(/^\+line \d+ x{30}$/.test(body.split('\n').pop() ?? '')).toBe(true)
+    })
+
+    test('Refresh after the history shrank shows the step that is left', async ($, on) => {
+      const world: World = {}
+      fakeWorld(on, {}, world)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+      await ui.press({ key: 'older' })
+      expect(await ui.find({ type: 'Text', text: /^step 2 of 2/ })).toBeDefined()
+
+      // only the newest turn is left (another session's purge, say)
+      world.log = 'c3\tc2\t1 minute ago\t\t[post] rename the helper\nc2\t\t4 minutes ago\t\t[pre] rename the helper'
+      await ui.press({ key: 'refresh' })
+      expect(await ui.find({ type: 'Text', text: /^step 1 of 1/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^turn 1 {2}"rename the helper"$/ })).toBeDefined()
+      expect((await ui.findAll({ type: 'Code' })).length).toBe(2)
+    })
+
+    test('a step that changed only a submodule says so, in the pane, the band and last', async ($, on) => {
+      const log = 'd2\td1\tnow\tsub\t[post] edit inside the submodule\nd1\t\tnow\t\t[pre] edit inside the submodule'
+      fakeWorld(on, {}, { log, diffs: {} })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(await ui.find({ type: 'Text', text: 'Changes inside submodule sub are not shown.' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'No changes in this step.' })).toBeUndefined()
+      expect(await band.find({ type: 'Text', text: '\u00b7 1 submodule \u00b7' })).toBeDefined()
+      const text = (await run($, 'last')).text ?? ''
+      expect(text.includes('_Changes inside submodule sub are not shown._')).toBe(true)
+      expect(text.includes('No changes in this step.')).toBe(false)
+    })
+
+    test('git never sees an inherited GIT_* variable, nor the person\'s own path quoting', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+
+      const gits = seen.ran.filter(argv => argv[0] === 'env')
+      expect(gits.length > 0).toBe(true)
+      for (const argv of gits) {
+        expect(argv.includes('GIT_OBJECT_DIRECTORY')).toBe(true)
+        expect(argv.includes(`--git-dir=${SHADOW}`)).toBe(true)
+        expect(argv.includes('core.quotePath=false')).toBe(true)
+      }
+      expect(seen.ran.some(argv => argv[0] === 'git')).toBe(false)
+    })
+
+    test('turns older than one read keep their numbers', async ($, on) => {
+      // a full read: 200 snapshots, every one a turn, the oldest still with a parent
+      const log = Array.from({ length: 200 }, (_, i) => `s${200 - i}\ts${199 - i}\tnow\t\t[post] turn text`).join('\n')
+      fakeWorld(on, {}, { log, turnsBefore: 7 })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      expect(await ui.find({ type: 'Text', text: /^turn 207 {2}"turn text"$/ })).toBeDefined()
+    })
+
+    test('purge deletes a snapshot store and empties the pane', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      expect((await run($, 'purge')).text).toBe(`Snapshots removed: ${SHADOW} (12K).`)
+      expect(seen.ran.some(argv => argv[0] === 'rm' && argv[2] === SHADOW)).toBe(true)
+      expect(await ui.find({ type: 'Text', text: 'No changes in this session yet.' })).toBeDefined()
+    })
+
+    for (const [what, world, answer] of [
+      ['the root', { shadow: '/' }, 'Refusing to delete /: not a snapshot store.'],
+      ['a home folder', { shadow: '/home/me' }, 'Refusing to delete /home/me: not a snapshot store.'],
+      ['a repository that is not bare', { bare: 'false' }, `Refusing to delete ${SHADOW}: not a snapshot store.`],
+      ['a path with no repository', { bare: 'missing' }, 'No snapshots for this project.'],
+    ] as const) {
+      test(`purge refuses ${what}`, async ($, on) => {
+        const seen = fakeWorld(on, {}, world)
+        await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+
+        expect((await run($, 'purge')).text).toBe(answer)
+        expect(seen.ran.some(argv => argv[0] === 'rm')).toBe(false)
+      })
+    }
 
     test('Hide is drawn on the terminal only', async ($, on) => {
       fakeWorld(on)

@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.1.2 - 2026-10-06
+
+Snapshots you can trust in more projects: fixes from a full outside review
+(GomelHawk/VeroDiff#2).
+
+### Fixed
+
+- **A file git cannot read no longer costs the turn.** One unreadable file used to drop a
+  turn's edits - or, in a new session, show turn 1 as the entire project. It is now left
+  out, and the rest of the turn is recorded.
+- **Files you keep private stay private.** `.git/info/exclude` and `.git/info/attributes`
+  are honoured like `.gitignore`, and clean filters from your repository's config - an
+  `include.path` or a worktree's config included - run, so git-crypt and transcrypt files
+  are stored encrypted. A file whose filter is named but defined nowhere is left out
+  rather than stored as it sits on disk.
+- **Edits inside a submodule are no longer invisible.** A turn that changed uncommitted
+  work in a submodule (or any repository nested in the project) is a step that says
+  `Changes inside submodule libs/ui are not shown.` - in the pane, in the row above the
+  prompt and in `/vero-diff last`.
+- **File names are right** for paths holding ` b/`, for non-ASCII names, and with your own
+  `diff.noprefix` set.
+- **Turn numbers hold in long sessions**: past 200 snapshots they no longer shift.
+- **A turn begun with an empty prompt** no longer borrows the previous turn's title.
+- **Nothing reaches your project's `.git`** even when Claude Code was started with git
+  variables such as `GIT_OBJECT_DIRECTORY` set.
+- **Snapshots take less disk**: they are packed as they pile up, and leftover session files
+  are cleared with the daily prune.
+- The pane no longer shows a new step's title over the previous step's files while it
+  reloads.
+
+### Install and uninstall scripts
+
+- `./install.sh --scope project DIR` installs for everyone who works in `DIR`, declaring
+  the GitHub marketplace rather than your clone's path; `--scope local DIR` does it for
+  you alone. `--scope project` without a directory used to write into the clone itself.
+- `./uninstall.sh --purge` deletes only the snapshot stores VeroDiff made, after listing
+  them and asking (`-y` skips the question) - never anything else in `VERODIFF_DIR`. It
+  also takes `--scope`, and reports what it could not remove.
+
+### Requirements
+
+- git 2.22 or newer.
+
 ## 1.1.1 - 2026-10-06
 
 The newest step now has a row of its own above the prompt, and the pane is one click away.
