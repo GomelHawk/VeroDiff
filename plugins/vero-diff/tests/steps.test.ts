@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { fenceFor, isShadowPath, parseLog, splitFiles } from '../hooks/steps'
+import { fenceFor, fitHunks, isShadowPath, parseLog, promptLabel, splitFiles, statusLine } from '../hooks/steps'
 
 // The log as `git log LOG_FORMAT` prints it, newest first: hash, parent, age, subject.
 const LOG = [
@@ -8,6 +8,21 @@ const LOG = [
   'c3\tc2\t3 minutes ago\t[pre] second turn',
   'c2\tc1\t5 minutes ago\t[post] first turn',
   'c1\t\t9 minutes ago\t[pre] first turn',
+].join('\n')
+
+// Two files: a text edit (with a CRLF line) and a binary.
+const DIFF = [
+  'diff --git a/a.txt b/a.txt',
+  'index 1..2 100644',
+  '--- a/a.txt',
+  '+++ b/a.txt',
+  '@@ -1,2 +1,3 @@',
+  ' alpha',
+  ' beta',
+  '+gamma\r',
+  'diff --git a/logo.png b/logo.png',
+  'Binary files a/logo.png and b/logo.png differ',
+  '',
 ].join('\n')
 
 describe('parseLog', () => {
@@ -24,25 +39,16 @@ describe('parseLog', () => {
     for (const step of parseLog(LOG)) expect(/\[(pre|post)\]/.test(step.title)).toBe(false)
   })
 
+  test('a finished turn carries its number, edits outside a turn none', () => {
+    expect(parseLog(LOG).map(step => step.turn)).toEqual([2, undefined, 1])
+  })
+
   test('a session with only its first snapshot has no steps', () => {
     expect(parseLog('c1\t\tnow\t[pre] hello\n')).toEqual([])
   })
 })
 
 describe('splitFiles', () => {
-  const DIFF = [
-    'diff --git a/a.txt b/a.txt',
-    'index 1..2 100644',
-    '--- a/a.txt',
-    '+++ b/a.txt',
-    '@@ -1,2 +1,3 @@',
-    ' alpha',
-    ' beta',
-    '+gamma\r',
-    'diff --git a/logo.png b/logo.png',
-    'Binary files a/logo.png and b/logo.png differ',
-    '',
-  ].join('\n')
 
   test('one entry per file, hunks only, no carriage returns', () => {
     const [text, image] = splitFiles(DIFF)
@@ -52,12 +58,42 @@ describe('splitFiles', () => {
     expect(image?.hunks).toBe('')
   })
 
-  test('a hunk too long for one Code element is cut on a line boundary', () => {
-    const long = `diff --git a/big b/big\n@@ -0,0 +1 @@\n${'+line\n'.repeat(3000)}`
+  test('counts added and removed lines per file, not the --- / +++ headers', () => {
+    const diff = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n--old\n+new\n keep\n'
+    const [file] = splitFiles(diff)
+    expect([file?.adds, file?.dels]).toEqual([1, 1])
+    expect(splitFiles(DIFF).map(f => [f.adds, f.dels])).toEqual([[1, 0], [0, 0]])
+  })
+
+  test('a file too long for one Code element still parses as hunks', () => {
+    const hunk = (n: number) => `@@ -${n},1 +${n},2 @@\n ctx\n${'+line\n'.repeat(40)}`
+    const long = `diff --git a/big b/big\n${Array.from({ length: 60 }, (_, i) => hunk(i * 10 + 1)).join('')}`
     const [file] = splitFiles(long)
     expect(file?.isCut).toBe(true)
     expect((file?.hunks.length ?? 0) <= 9000).toBe(true)
+    expect(file?.adds).toBe(60 * 40)
+    // whole hunks only: the last one kept ends with its own last line
     expect(file?.hunks.endsWith('+line')).toBe(true)
+    expect((file?.hunks.split('\n').length ?? 0) % 42).toBe(0) // a header, ctx, 40 lines
+  })
+})
+
+describe('fitHunks', () => {
+  test('keeps whole hunks while they fit', () => {
+    const two = '@@ -1,1 +1,1 @@\n-a\n+b\n@@ -9,1 +9,1 @@\n-c\n+d'
+    expect(fitHunks(two, 22)).toBe('@@ -1,1 +1,1 @@\n-a\n+b')
+    expect(fitHunks(two, 1000)).toBe(two)
+  })
+
+  test('cuts a single oversized hunk and rewrites its header to match', () => {
+    const one = `@@ -5,3 +5,203 @@ fn\n ctx\n${'+added line\n'.repeat(200)} tail\n-gone`
+    const fitted = fitHunks(one, 600)
+    const lines = fitted.split('\n')
+    const body = lines.slice(1)
+    const olds = body.filter(l => !l.startsWith('+')).length
+    const news = body.filter(l => !l.startsWith('-')).length
+    expect(fitted.length <= 600).toBe(true)
+    expect(lines[0]).toBe(`@@ -5,${olds} +5,${news} @@ fn`)
   })
 })
 
@@ -65,6 +101,34 @@ describe('fenceFor', () => {
   test('outlasts every backtick run in the text', () => {
     expect(fenceFor('plain')).toBe('```')
     expect(fenceFor('+```bash')).toBe('````')
+  })
+})
+
+describe('statusLine', () => {
+  test('sums the newest step\'s files', () => {
+    const files = splitFiles(DIFF)
+    const [turn2] = parseLog(LOG)
+    expect(statusLine(turn2, files)).toBe('VeroDiff: turn 2 · 2 files · +1 \u22120')
+  })
+
+  test('names edits outside a turn and clears with no step', () => {
+    const outside = parseLog(LOG)[1]
+    expect(statusLine(outside, splitFiles(DIFF).slice(0, 1))).toBe('VeroDiff: edits outside a turn · 1 file · +1 \u22120')
+    expect(statusLine(undefined, [])).toBe(undefined)
+  })
+})
+
+describe('promptLabel', () => {
+  test('cuts by characters, never through a multi-byte one', () => {
+    const russian = 'хорошо. давай сделаем некоторые изменения '.repeat(5)
+    const label = promptLabel(russian)
+    expect([...label].length).toBe(100)
+    expect(label).toBe([...russian.trim()].slice(0, 100).join(''))
+    expect(promptLabel('🙂'.repeat(150))).toBe('🙂'.repeat(100))
+  })
+
+  test('folds a multi-line prompt onto one line', () => {
+    expect(promptLabel('fix\n\nthe\tbug\r\n')).toBe('fix the bug')
   })
 })
 

@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.1.0 - 2026-10-06
+
+Find your way around a turn faster, and let Claude read its own diffs.
+
+### New
+
+- **A list of the files a step touched**, with `+`/`−` counts, at the top of every
+  step with more than one file. Click a name to jump to its diff; **↑ Files** at the end
+  of each diff takes you back up.
+- **Fold a file once you have read it.** Click its name above the diff: it closes to one
+  line and gets a `✓` in the list, so after an interruption you see what is left. Folds
+  last while you stay on the step; another step or a new turn clears them.
+- **A status line** under the prompt - `VeroDiff: turn 3 · 2 files · +5 −1` - so the
+  last turn is visible even with the pane closed.
+- **Claude can look up a turn's diff by itself** through a new tool, `turn_diff`: ask
+  "what did you change two turns ago?".
+- **Old snapshots clear themselves.** Once a day, sessions untouched for 30 days are
+  dropped; `/vero-diff purge` still clears a project at once.
+
+### Fixed
+
+- A long file's diff keeps its colours and syntax highlighting: it used to be cut in the
+  middle of a hunk, which made the pane draw it as plain text.
+- A step's title no longer ends in a stray `Ñ` when the prompt is in Cyrillic or any
+  other non-Latin script.
+- After `/clear` the pane no longer keeps showing the previous conversation's steps.
+- If the end of a turn was ever missed, snapshots no longer stop for the rest of the
+  session.
+- The pane no longer flashes "No changes in this step." while it reloads.
+
+### Changed
+
+- `jq` and `python3` are no longer used: step titles are labelled on every machine.
+
 ## 1.0.0 - 2026-10-05
 
 VeroDiff now lives inside Claude Code: each turn's diff is drawn in a native side pane,

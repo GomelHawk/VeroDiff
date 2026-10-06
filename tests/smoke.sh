@@ -106,27 +106,30 @@ shadow() { GIT_DIR="$SHADOW" git "$@"; }
 # The diff of the Nth newest snapshot against its parent, as the pane draws it.
 step_diff() { local sha; sha="$(shadow rev-parse "$REF~$1")"; shadow diff --no-color "$sha^" "$sha"; }
 
+# What the hooks module does: session and prompt in the environment, nothing on stdin.
+snap() { VERODIFF_SESSION_ID=smoke VERODIFF_PROMPT="${2:-}" "$SNAP" "$1" </dev/null; }
+
 objects() { find "$REPO/.git/objects" -type f | sed "s|^$REPO/.git/objects/||" | LC_ALL=C sort; }
 objects > "$WORK/objects.before"
 
 # ---- turn 1 ----
-echo '{"prompt":"first turn","session_id":"smoke"}' | "$SNAP" pre
+snap pre "first turn"
 is "hook exits 0 (pre)" "$?" "0"
 printf 'alpha\nbeta\ngamma\n' > a.txt
 printf 'new file\n' > added.txt
 printf 'secret\n' > skipme.log           # gitignored: must never appear
-echo '{"session_id":"smoke"}' | "$SNAP" post
+snap post
 is "hook exits 0 (post)" "$?" "0"
 
 # ---- turn 2 ----
-echo '{"prompt":"second turn","session_id":"smoke"}' | "$SNAP" pre
+snap pre "second turn"
 rm -f added.txt
-echo '{"session_id":"smoke"}' | "$SNAP" post
+snap post
 
 # ---- a turn that changes nothing must not create a step ----
 steps_before="$(shadow rev-list --count "$REF")"
-echo '{"prompt":"a question, no edits","session_id":"smoke"}' | "$SNAP" pre
-echo '{"session_id":"smoke"}' | "$SNAP" post
+snap pre "a question, no edits"
+snap post
 steps_after="$(shadow rev-list --count "$REF")"
 is "a no-op turn adds no step" "$steps_after" "$steps_before"
 
@@ -155,6 +158,39 @@ has "a turn keeps the prompt that began it" "$subjects" '^\[post\] first turn'
 is  "the oldest snapshot has no parent"   "$(shadow rev-list --max-parents=0 "$REF" | wc -l | tr -d ' ')" "1"
 is  "the project path is recorded"        "$(cat "$SHADOW/project-path")" "$TOP"
 hasnt "sessions do not share a ref"       "$(shadow for-each-ref --format='%(refname)')" 'session/default'
+is  "where names the shadow repository"    "$(snap where)" "$SHADOW"
+
+# A long Cyrillic prompt survives whole: the script must not cut it by bytes.
+ru="$(printf 'хорошо, давай сделаем изменения %.0s' 1 2 3 4)и всё"
+printf 'delta\n' >> "$REPO/a.txt"
+snap pre "$ru"; printf 'epsilon\n' >> "$REPO/a.txt"; snap post
+is  "a multi-byte prompt is kept intact"     "$(shadow log -1 --format=%s "$REF")" "[post] $ru"
+
+echo
+echo "== stale sessions are pruned =="
+
+# A session whose newest snapshot is 60 days old, with its index and label beside it.
+old="$(printf 'old\n' | GIT_COMMITTER_DATE="$(( $(date +%s) - 60 * 86400 )) +0000" \
+  GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t \
+  GIT_DIR="$SHADOW" git commit-tree "$(shadow rev-parse "$REF^{tree}")")"
+shadow update-ref refs/verodiff/session/old "$old"
+: > "$SHADOW/index-old"; : > "$SHADOW/label-old"
+
+VERODIFF_SESSION_ID=old "$SNAP" prune 30 </dev/null
+has "prune never drops the session asking"  "$(shadow for-each-ref --format='%(refname)')" 'session/old'
+snap prune 30
+is  "prune exits 0"                         "$?" "0"
+hasnt "a session idle past the limit is dropped" "$(shadow for-each-ref --format='%(refname)')" 'session/old'
+[ ! -e "$SHADOW/index-old" ] && [ ! -e "$SHADOW/label-old" ] && ok "its index and label go with it" \
+  || no "its index and label go with it"
+has "a recent session is kept"               "$(shadow for-each-ref --format='%(refname)')" 'session/smoke'
+
+# The module passes the prompt and session id in the environment; no JSON to parse.
+if grep -qE '^[^#]*\b(jq|python3?)\b' "$SNAP"; then
+  no "snapshot.sh needs no jq or python" "found a jq/python call"
+else
+  ok "snapshot.sh needs no jq or python"
+fi
 
 echo
 echo "== the hook never fails a turn =="
@@ -162,6 +198,7 @@ echo "== the hook never fails a turn =="
 cd "$WORK" || exit 1
 CLAUDE_PROJECT_DIR="$WORK" "$SNAP" pre </dev/null >/dev/null 2>&1
 is "snapshot hook outside a git repository" "$?" "0"
+is "where prints nothing outside a git repository" "$(CLAUDE_PROJECT_DIR="$WORK" "$SNAP" where </dev/null)" ""
 
 echo
 if [ "$fail" -eq 0 ]; then

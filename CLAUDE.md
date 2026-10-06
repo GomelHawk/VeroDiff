@@ -45,6 +45,7 @@ verodiff/                                  marketplace repo root
 ├── install.sh                             validate -> marketplace add -> plugin install
 ├── uninstall.sh                           plugin uninstall (+ --purge for snapshots)
 ├── CLAUDE.md                              this file
+├── CONTRIBUTING.md                        testing, CI, publishing: for maintainers
 ├── README.md                              user-facing docs
 └── plugins/vero-diff/                     the plugin, name "vero-diff"
     ├── .claude-plugin/plugin.json         manifest: version, "types" contract
@@ -52,31 +53,40 @@ verodiff/                                  marketplace repo root
     ├── hooks/register.tsx                 the mod: snapshots, /vero-diff, the pane
     ├── hooks/steps.ts                     pure parsing of git output (no `$`), tested
     ├── types/index.d.ts                   $.state contract: PluginState['vero-diff']
-    ├── tests/steps.test.ts                `claude plugin test` suite for steps.ts
-    └── scripts/snapshot.sh                takes one snapshot; called by the module
+    ├── tests/steps.test.ts                `claude plugin test`: steps.ts
+    ├── tests/pane.test.ts                 `claude plugin test`: the pane, both surfaces
+    └── scripts/snapshot.sh                snapshot / where / prune; called by the module
 ```
 
 ## How it works
 
-**Snapshot mechanism.** `scripts/snapshot.sh` takes one snapshot. It sets `GIT_DIR` to a
+**Snapshot mechanism.** `scripts/snapshot.sh pre|post` takes one snapshot. It sets `GIT_DIR` to a
 bare repo in the cache and `GIT_WORK_TREE` to the project, stages everything into a
 private index with `git add -A`, writes a tree, and chains it onto a ref with
 `git commit-tree` + `git update-ref`. No object ever lands in the project's `.git`;
 `.gitignore` is still honoured because git reads it from the work tree. If the tree is
-unchanged from the parent snapshot, no commit is made. It reads the same stdin JSON a
-command hook would (`prompt`, `session_id`) and always exits 0.
+unchanged from the parent snapshot, no commit is made. Its input is the environment -
+`VERODIFF_SESSION_ID`, `VERODIFF_PROMPT`, `CLAUDE_PROJECT_DIR` - so it needs no JSON
+parser, and it always exits 0. `snapshot.sh where` prints the shadow repo's path and is
+the only place the cache layout is computed; `snapshot.sh prune DAYS` drops sessions whose
+newest snapshot is older than DAYS (never the asking session) and runs
+`git gc --prune=2.weeks.ago`, so a snapshot another session is writing cannot lose an
+object.
 
-**Who calls it.** The hooks module, through `$.process.run(['bash', snapshot.sh, kind])`
-with `cwd` and `CLAUDE_PROJECT_DIR` set to `$.session.root()`: `pre` on `turn.start`
-(with the prompt), `post` on `turn.complete` of the main agent, then the pane reloads.
-There are no command hooks any more, so `/hooks` lists nothing for VeroDiff.
+**Who calls it.** The hooks module, through `$.process.run(['bash', snapshot.sh, ...])`
+(`script()` in `register.tsx`) with `cwd` and `CLAUDE_PROJECT_DIR` set to
+`$.session.root()`: `pre` on `turn.start` (with the prompt, cut to 100 characters by
+`promptLabel()`), `post` on `turn.complete` of the main agent, then the pane reloads and
+the status line follows. `prune 30` runs from `session.start` in the background, at most
+once a day (`$.store` key `prunedAt`). There are no command hooks, so `/hooks` lists
+nothing for VeroDiff.
 
 **Storage.** `~/.cache/verodiff/<basename>-<md5-of-abspath>.git`, one bare repo per
 project. Override with `VERODIFF_DIR`. Deliberately *not* `${CLAUDE_PLUGIN_DATA}`, so the
 location does not depend on how the plugin was loaded. `claude plugin uninstall` does not
-remove snapshots; `/vero-diff purge` (this project) and `uninstall.sh --purge` (all) do.
-The module computes the path with the same shell lines as `snapshot.sh` (`SHADOW_SCRIPT`)
-so the two can never disagree.
+remove snapshots; `/vero-diff purge` (this project), `uninstall.sh --purge` (all) and the
+daily prune (sessions idle 30 days) do. The module asks `snapshot.sh where` for the path
+rather than computing it, so the two can never disagree.
 
 **Per-session isolation.** Each session gets `refs/verodiff/session/<session_id>`, its own
 index file and its own label file, so two sessions in one repo never race on
@@ -92,11 +102,21 @@ is a separate `git worktree` per session; do not try to solve this with refs.
 atom, `view` (`$.state`, typed by `types/index.d.ts`); the drawing only reads it, the
 handlers and events write it. Each file is a `<Code format="diff">`. Buttons Older /
 Newer / Latest / Refresh, plus Hide on `e.surface === 'terminal'` only (the desktop has
-its own close mark). Whether the person closed it is `$.store` key `isPaneHidden`.
+its own close mark). With more than one file the step opens with a list (`summary`):
+each name jumps to its file (`file:<path>` key, `$.ui.scroll`) and each file ends with
+**↑ Files** (`top:<path>`) back up. Each file's name (`fold:<path>`) folds it to one line
+and ticks it in the list. Folds are `view.collapsed`, kept only while `view.shownSha`
+stays the same: by the owner's decision, showing any other step or a new turn landing
+means the step was accepted, so `loadStep()` drops them; re-reading the same step
+(Refresh, `last`, the tool) keeps them. Nothing about folds is remembered beyond that.
+Whether the person closed the pane is `$.store` key
+`isPaneHidden`. The newest step is also `$.ui.status`, `statusLine()` in `steps.ts`.
 
-**The command.** `/vero-diff` opens the pane, `/vero-diff last [N]` answers `command.run`
-with `{ text }` - markdown the model reads too - and `/vero-diff purge` deletes the
-project's shadow repo. Everything is English only, by the owner's decision.
+**The command and the tool.** `/vero-diff` opens the pane, `/vero-diff last [N]` answers
+`command.run` with `{ text }` - markdown the model reads too - and `/vero-diff purge`
+deletes the project's shadow repo. The model has the same diff as the tool
+`mcp__vero-diff__turn_diff` (`{ step? }`), registered in `session.start` and served by a
+`tool.call` hook. Everything is English only, by the owner's decision.
 
 ## Gotchas discovered the hard way
 
@@ -120,6 +140,12 @@ any of that come back.
   entry in `marketplace.json` breaks every existing install.
 - **Reserved marketplace names** (`claude-plugins-official`, `anthropic-plugins`, and
   similar) cannot be used.
+- **A `tool.call` matcher must be a literal string.** A template literal
+  (`` `mcp__vero-diff__${TOOL}` ``) validates but the validator reads it as `tool=?`.
+- **Give a gating hook a `.catch`.** `claude plugin validate` flags `ui.close` and
+  `tool.call` hooks without one: a hook that throws there would keep the pane open or
+  fail the model's call. Fire-and-forget calls (`$.ui.scroll`) get `.catch` too, or a
+  refusal becomes an unhandled rejection.
 - **The mod API is early access.** The engine's own declaration says the surface may
   change between releases. Re-run `claude plugin validate` and `claude plugin test` against
   each new Claude Code release before cutting one of ours.
@@ -128,9 +154,18 @@ any of that come back.
 
 - **Snapshot on `turn.start`, never on `prompt.submit`.** A prompt typed while a turn
   runs fires `prompt.submit` at Enter, mid-turn, which would split that turn in two.
-- **Guard against subagent turns.** `isTurnOpen` is set at a main turn's start and
-  cleared at its `turn.complete` (`e.agentId === undefined`), so a subagent's turn never
-  takes a `pre` snapshot inside the main one.
+- **Guard against subagent turns, but not forever.** `openTurnAt` is set at a main turn's
+  start and cleared at its `turn.complete` (`e.agentId === undefined`), so a subagent's
+  turn never takes a `pre` snapshot inside the main one. `turn.start` carries no agent id,
+  so the guard is all there is - and a `turn.complete` that never arrived would stop
+  snapshots for the rest of the session. Hence the reset in `session.start` and
+  `session.end`, and the 6-hour staleness limit (`STALE_TURN_MS`).
+- **`/clear` fires `session.end` (`reason: 'clear'`) and no `session.start`.** The process
+  goes on under a new session id, so the pane would keep showing the old session's steps;
+  the `session.end` hook empties it.
+- **A message sent mid-turn ends the turn.** The steps since it land when the
+  continuation finishes; until then the pane shows the last finished step. Not a bug, but
+  it reads like one.
 - **`turn.complete` fires for an interrupted turn too** (`reason: 'aborted'`), so an
   interrupted turn is its own step - unlike 0.1.x, whose `Stop` hook did not fire.
 - **`$.process.run` time does not count against a hook's budget**, which is what makes
@@ -150,8 +185,14 @@ any of that come back.
 - **Turn numbers are counted from the oldest snapshot forward**, so they stay stable while
   the newest-first step index shifts with every new turn.
 - **A `Code` element holds at most 10,000 characters**, and only tab and newline as
-  control characters. `splitFiles()` cuts each file at 9,000 on a line boundary and
-  strips the rest (a CRLF file's `\r` would otherwise get the whole tree refused).
+  control characters. `clean()` strips the rest (a CRLF file's `\r` would otherwise get
+  the whole tree refused).
+- **A diff cut mid-hunk no longer parses** and `Code` draws it as plain text, colouring
+  and syntax highlighting gone. `fitHunks()` keeps whole hunks, and when even the first is
+  too long, keeps what fits and rewrites its `@@` header to count exactly those lines.
+- **Cut text by characters, never with `cut -c`.** GNU `cut` counts bytes, so a Cyrillic
+  prompt was split through a character and git showed the stray byte as `Ñ`. The module
+  cuts (`promptLabel()`); `snapshot.sh` never shortens the label.
 - **A diff of a markdown file contains fences of its own.** `/vero-diff last` wraps the
   diff in a fence one backtick longer than the longest run inside it (`fenceFor()`).
 - **A pane opened unasked waits for 144 terminal columns.** `/vero-diff` (asked) places it
@@ -185,8 +226,8 @@ any of that come back.
 Three checks, all run by CI, none needing an account or the network:
 
 ```bash
-tests/smoke.sh                              # snapshot.sh: 30 assertions, git + bash only
-claude plugin test ./plugins/vero-diff      # hooks/steps.ts against the engine itself
+tests/smoke.sh                              # snapshot.sh: 39 assertions, git + bash only
+claude plugin test ./plugins/vero-diff      # steps.ts and the pane, against the engine
 
 claude plugin validate .                    # marketplace catalog
 claude plugin validate ./plugins/vero-diff  # manifest, hooks module, state contract
@@ -201,9 +242,15 @@ Loading the plugin once with `--plugin-dir` makes the engine write its declarati
 `npx -p typescript tsc -p plugins/vero-diff` type-checks the module. Neither is
 committed: the declarations belong to one Claude Code build.
 
-The test kit runs with no fs, network or process, so only `$`-free code is unit-tested.
-Keep parsing and rules in `hooks/steps.ts` and add a case to `tests/steps.test.ts` for
-anything you fix there; add a case to `tests/smoke.sh` for anything in `snapshot.sh`.
+The test kit runs with no fs, network or process. `tests/steps.test.ts` drives the
+`$`-free code directly; `tests/pane.test.ts` draws the pane through the engine on
+`terminal` and `desktop`, with hooks beneath the plugin standing in for the world
+(`fakeWorld()`): `process.run` answers as `snapshot.sh` and git would. Two rules learned
+writing it: an *op* beneath the plugin (`command.register`, `ui.open`, `session.id`,
+`process.run`, ...) answers `{ value }`, an *event* (`session.start`, `session.end`)
+answers its result; and `ui.scroll` cannot be observed - the kit lays nothing out, so a
+key never resolves to an offset. Keep parsing and rules in `hooks/steps.ts`; add a case
+for anything you fix; add a case to `tests/smoke.sh` for anything in `snapshot.sh`.
 
 Live, in a scratch repository:
 
@@ -223,13 +270,14 @@ file adds a step when the turn ends, `p`/`n`/`l`/`r` after `Ctrl+x Tab`, Hide cl
 and it stays closed in a new session until `/vero-diff`, `/vero-diff last` and `last 2`,
 and `/vero-diff purge` last of all.
 
-Manual snapshot invocation, useful for fixtures - the same payload the module sends:
+Manual snapshot invocation, useful for fixtures - the same environment the module sets:
 
 ```bash
-export CLAUDE_PROJECT_DIR=$PWD
-echo '{"prompt":"step 1","session_id":"sess-A"}' | .../scripts/snapshot.sh pre
+export CLAUDE_PROJECT_DIR=$PWD VERODIFF_SESSION_ID=sess-A
+VERODIFF_PROMPT="step 1" .../scripts/snapshot.sh pre
 # ...edit files...
-echo '{"session_id":"sess-A"}' | .../scripts/snapshot.sh post
+.../scripts/snapshot.sh post
+.../scripts/snapshot.sh where          # the shadow repo's path
 ```
 
 **Regression to always re-check after touching `snapshot.sh`:** the project's
@@ -263,15 +311,13 @@ keep CI, tests and internal refactors out of the user-facing notes.
 
 ### 2. Propose a number
 
-The project is 0.x, so:
+Ordinary semver, from 1.0 on:
 
 | What changed | Bump |
 | :-- | :-- |
-| a command, flag, key or output format removed or renamed | minor - `0.2.0` |
-| a new command, flag, terminal, or capability | minor |
-| fixes, wording, docs, CI, tests only | patch - `0.1.1` |
-
-After 1.0 this becomes ordinary semver, breaking changes taking the major.
+| a command, subcommand, key, tool or output format removed or renamed; snapshots an older release cannot read | major - `2.0.0` |
+| a new command, subcommand, key, tool, or capability | minor - `1.1.0` |
+| fixes, wording, docs, CI, tests only | patch - `1.0.1` |
 
 ### 3. Ask before editing anything
 
@@ -328,11 +374,4 @@ nothing notifies them, which is why the GitHub Release matters.
 
 ## Open ideas, not implemented
 
-- Horizontal scrolling in the pane for very wide diffs (currently truncated or wrapped).
-- Per-file navigation inside a step: click a file in a `--stat` header to jump to it.
-- Pruning old snapshots: nothing expires them today except `/vero-diff purge`.
-- A `session.end` hook that drops a session's ref once its snapshots are stale.
-- Filtering a step's diff by path, for monorepos.
-- A tool (`$.tool`) the model can call to read a turn's diff without the person typing
-  `/vero-diff last`.
-- `claude plugin eval` cases; none exist yet.
+None at the moment.

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { View } from '../types'
-import { LOG_FORMAT, clean, fenceFor, isShadowPath, parseLog, splitFiles } from './steps'
+import { LOG_FORMAT, clean, fenceFor, isShadowPath, parseLog, promptLabel, splitFiles, statusLine } from './steps'
 
 // VeroDiff: snapshot the working tree at both ends of a turn (scripts/snapshot.sh) and
 // draw the diff of each turn in a pane. Snapshots live in a bare repository outside the
@@ -10,53 +10,65 @@ import { LOG_FORMAT, clean, fenceFor, isShadowPath, parseLog, splitFiles } from 
 
 const PANE = 'vero-diff'
 const COMMAND = 'vero-diff'
+const TOOL = 'turn_diff'
 // Whether the person closed the pane, kept across sessions: a closed pane stays closed
 // until the command opens it again.
 const HIDDEN_KEY = 'isPaneHidden'
+// When stale sessions were last pruned; pruning runs at most once a day.
+const PRUNED_AT_KEY = 'prunedAt'
+const PRUNE_EVERY_MS = 24 * 60 * 60 * 1000
+const KEEP_DAYS = 30
+// A main turn left open this long is taken as one whose end never arrived.
+const STALE_TURN_MS = 6 * 60 * 60 * 1000
 const LIMIT = 200
 const MAX_FILES = 40
 const MAX_INLINE_CHARS = 60000 // `last` lands in the model's context too
 const SNAPSHOT_TIMEOUT_MS = 20000
 
-const INITIAL: View = { shadow: '', steps: [], index: 0, files: [], error: '', isLoading: true }
+const INITIAL: View = {
+  shadow: '',
+  steps: [],
+  index: 0,
+  shownSha: '',
+  files: [],
+  collapsed: [],
+  error: '',
+  isLoading: true,
+}
 const view = atom({ plugin: 'vero-diff', key: 'view' } as const, INITIAL)
 
-// The path snapshot.sh writes to, computed by the same lines, so the two always agree.
-const SHADOW_SCRIPT = `
-TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
-CACHE="\${VERODIFF_DIR:-\${XDG_CACHE_HOME:-$HOME/.cache}/verodiff}"
-if command -v md5sum >/dev/null 2>&1;  then key="$(printf '%s' "$TOP" | md5sum | cut -c1-12)"
-elif command -v md5 >/dev/null 2>&1;   then key="$(printf '%s' "$TOP" | md5 -q | cut -c1-12)"
-else key="$(printf '%s' "$TOP" | cksum | cut -d' ' -f1)"; fi
-printf '%s' "$CACHE/$(basename "$TOP")-$key.git"
-`
+// snapshot.sh is the one place that knows the cache layout: `where` prints the path,
+// `pre`/`post` take a snapshot, `prune` drops stale sessions. It always exits 0.
+async function script($: EngineInterface, args: string[], vars: Record<string, string> = {}) {
+  const cwd = await $.session.root()
+  const session = await $.session.id()
+  return $.process.run(['bash', `${$.plugin.root}/scripts/snapshot.sh`, ...args], {
+    cwd,
+    env: { CLAUDE_PROJECT_DIR: cwd, VERODIFF_SESSION_ID: session, ...vars },
+    timeoutMs: SNAPSHOT_TIMEOUT_MS,
+  })
+}
 
 async function shadowOf($: EngineInterface): Promise<string> {
-  const cwd = await $.session.root()
-  const out = await $.process.run(['bash', '-c', SHADOW_SCRIPT], { cwd })
-  return out.stdout.trim()
+  return (await script($, ['where'])).stdout.trim()
 }
 
 async function git($: EngineInterface, shadow: string, args: string[]) {
   return $.process.run(['git', ...args], { env: { GIT_DIR: shadow } })
 }
 
-// One snapshot. snapshot.sh reads the same JSON a command hook would get on stdin, and
-// exits 0 whatever happens, so a failed snapshot never gets in the way of a turn.
 async function snapshot($: EngineInterface, kind: 'pre' | 'post', prompt = '') {
   try {
-    const cwd = await $.session.root()
-    const session_id = await $.session.id()
-    const payload = kind === 'pre' ? { prompt, session_id } : { session_id }
-    await $.process.run(['bash', `${$.plugin.root}/scripts/snapshot.sh`, kind], {
-      cwd,
-      stdin: JSON.stringify(payload),
-      env: { CLAUDE_PROJECT_DIR: cwd },
-      timeoutMs: SNAPSHOT_TIMEOUT_MS,
-    })
+    await script($, [kind], { VERODIFF_PROMPT: promptLabel(prompt) })
   } catch {
     // a snapshot that timed out is one missing step, not a broken turn
   }
+}
+
+// The status line follows the newest step, whichever step the pane shows.
+async function showStatus($: EngineInterface) {
+  const v = await read($, view)
+  if (v.index === 0) $.ui.status(statusLine(v.steps[0], v.files))
 }
 
 async function loadStep($: EngineInterface, index: number) {
@@ -64,14 +76,23 @@ async function loadStep($: EngineInterface, index: number) {
   const step = v.steps[index]
   if (!step) return
   const out = await git($, v.shadow, ['diff', '--no-color', '--no-ext-diff', '-M', step.parent, step.sha])
-  await update($, view, cur => ({ ...cur, index, files: splitFiles(out.stdout) }))
+  // Folding is for reviewing the step on screen. Showing another step - by Older, Newer,
+  // Latest, or a new turn landing - means this one is accepted, so the folds go; the
+  // same step read again (Refresh, `last`, the model's tool) keeps them.
+  await update($, view, cur => ({
+    ...cur,
+    index,
+    shownSha: step.sha,
+    files: splitFiles(out.stdout),
+    collapsed: cur.shownSha === step.sha ? cur.collapsed : [],
+  }))
 }
 
 async function reload($: EngineInterface, jumpToLatest: boolean) {
   try {
     const shadow = await shadowOf($)
     if (!shadow) {
-      await update($, view, cur => ({ ...cur, shadow, isLoading: false, error: 'Not a git repository.' }))
+      await update($, view, cur => ({ ...cur, shadow, steps: [], files: [], isLoading: false, error: 'Not a git repository.' }))
       return
     }
     const sid = await $.session.id()
@@ -79,15 +100,27 @@ async function reload($: EngineInterface, jumpToLatest: boolean) {
     const steps = log.exitCode === 0 ? parseLog(log.stdout) : []
     const prev = await read($, view)
     const index = jumpToLatest ? 0 : Math.min(prev.index, Math.max(0, steps.length - 1))
-    await update($, view, cur => ({ ...cur, shadow, steps, files: [], isLoading: false, error: '' }))
+    // The files stay as they are until the step's own arrive: emptying them first
+    // would flash "No changes in this step." on every reload.
+    await update($, view, cur => ({
+      ...cur,
+      shadow,
+      steps,
+      files: steps.length === 0 ? [] : cur.files,
+      collapsed: steps.length === 0 ? [] : cur.collapsed,
+      isLoading: false,
+      error: '',
+    }))
     await loadStep($, index)
+    if (steps.length === 0) $.ui.status(undefined)
+    else await showStatus($)
   } catch (err) {
     await update($, view, cur => ({ ...cur, isLoading: false, error: String(err) }))
   }
 }
 
-// `/vero-diff last [N]`: one step's diff as a transcript row, which the model reads as
-// well. N counts as the pane does: 1 is the newest step.
+// One step's diff as markdown: what `/vero-diff last [N]` prints and the model's tool
+// returns. N counts as the pane does: 1 is the newest step.
 async function lastDiff($: EngineInterface, arg: string): Promise<string> {
   await reload($, false)
   const v = await read($, view)
@@ -131,34 +164,78 @@ async function purge($: EngineInterface): Promise<string> {
   const size = await $.process.run(['du', '-sh', shadow])
   const rm = await $.process.run(['rm', '-rf', shadow])
   if (rm.exitCode !== 0) return `Could not delete ${shadow}: ${rm.stderr.trim()}`
-  await update($, view, cur => ({ ...cur, steps: [], files: [], index: 0, error: '' }))
+  await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', index: 0, error: '' }))
+  $.ui.status(undefined)
 
   return `Snapshots removed: ${shadow} (${size.stdout.split('\t')[0] || 'size unknown'}).`
 }
 
+// Sessions untouched for KEEP_DAYS lose their snapshots, at most once a day, in the
+// background: a prune never holds up a session's start.
+async function pruneStale($: EngineInterface) {
+  try {
+    const last = Number((await $.store.get(PRUNED_AT_KEY)) ?? 0)
+    if (Date.now() - last < PRUNE_EVERY_MS) return
+    await $.store.set(PRUNED_AT_KEY, Date.now())
+    await script($, ['prune', String(KEEP_DAYS)])
+  } catch {
+    // a missed prune is tried again tomorrow
+  }
+}
+
 export const register: Register = on => {
-  // The module's own variable: true from a main turn's start to its end, so a subagent's
-  // turn, which starts inside it, never takes a snapshot that would split the turn.
-  let isTurnOpen = false
+  // The main turn in flight: set at its start, cleared at its end. A subagent's turn
+  // starts inside it and must not take a snapshot that would split it. One that never
+  // ended (its turn.complete lost) stops counting after STALE_TURN_MS, so snapshots
+  // cannot stop for the rest of the session.
+  let openTurnAt: number | undefined
 
   on('session.start', async ($, e, next) => {
+    openTurnAt = undefined
     await $.command.register({
       name: COMMAND,
       description: 'VeroDiff: what changed on each turn (pane, last [N], purge)',
       argumentHint: '[last [N] | purge]',
+    })
+    await $.tool.register({
+      name: TOOL,
+      description:
+        'Shows what changed on disk during one step of this session, as recorded by VeroDiff: ' +
+        'a summary and the full git diff between the turn\'s start and its end. ' +
+        'Step 1 is the newest step, 2 the one before it, and so on. ' +
+        'Use it to check exactly what an earlier turn changed.',
+      inputSchema: {
+        type: 'object',
+        properties: { step: { type: 'integer', minimum: 1, description: '1 is the newest step' } },
+      },
     })
     await reload($, true)
     const isGitRepo = (await read($, view)).shadow !== ''
     if (isGitRepo && (await $.store.get(HIDDEN_KEY)) !== true) {
       void $.ui.open({ id: PANE, title: 'VeroDiff' })
     }
+    if (isGitRepo) void pruneStale($)
 
     return next(e)
   })
 
+  // A /clear ends the conversation and goes on under a new session id with no
+  // session.start: the pane must not keep showing the old session's steps.
+  on('session.end', async ($, e, next) => {
+    const done = await next(e)
+    openTurnAt = undefined
+    if (e.reason === 'clear') {
+      await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', index: 0, error: '' }))
+      $.ui.status(undefined)
+    }
+
+    return done
+  })
+
   on('turn.start', async ($, e, next) => {
-    if (!isTurnOpen) {
-      isTurnOpen = true
+    const isInsideOpenTurn = openTurnAt !== undefined && Date.now() - openTurnAt < STALE_TURN_MS
+    if (!isInsideOpenTurn) {
+      openTurnAt = Date.now()
       await snapshot($, 'pre', e.text)
     }
 
@@ -170,13 +247,21 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId === undefined) {
-      isTurnOpen = false
+      openTurnAt = undefined
       await snapshot($, 'post')
       await reload($, true)
     }
 
     return done
   })
+
+  // The matcher is a literal: `mcp__<plugin>__<name>` as $.tool.register lists it.
+  on('tool.call', { tool: 'mcp__vero-diff__turn_diff' }, async ($, e) => {
+    const step = (e as { step?: unknown }).step
+    const text = await lastDiff($, typeof step === 'number' ? String(step) : '')
+
+    return { result: text }
+  }).catch(() => ({ deny: 'VeroDiff could not read the snapshots for that step.' }))
 
   on('command.run', { command: COMMAND }, async ($, e) => {
     const [sub = '', arg = ''] = e.args.trim().split(/\s+/)
@@ -193,11 +278,12 @@ export const register: Register = on => {
 
   // Closed by the person (the desktop's own close mark) or by the Hide button; an unload
   // is a reload or the session ending, not a choice.
+  // A failure to remember must never keep the pane open, hence the catch.
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE && e.origin.kind !== 'unload') await $.store.set(HIDDEN_KEY, true)
 
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Code } = $.ui.resolve(e)
@@ -223,8 +309,25 @@ export const register: Register = on => {
 
     const step = v.steps[v.index]
     if (!step) return <Text dimColor>Loading snapshots...</Text>
-    const go = (to: number) => () => void loadStep($, to)
+    const go = (to: number) => () => void loadStep($, to).then(() => showStatus($))
     const shown = v.files.slice(0, MAX_FILES)
+    const scrollTo = (key: string) =>
+      $.ui.scroll({ to: { key }, in: PANE, block: 'start' }).catch(() => undefined)
+    const jump = (key: string) => () => void scrollTo(key)
+    const isFolded = (path: string) => v.collapsed.includes(path)
+    const fold = (path: string) => () =>
+      void update($, view, cur => ({
+        ...cur,
+        collapsed: cur.collapsed.includes(path) ? cur.collapsed.filter(p => p !== path) : [...cur.collapsed, path],
+      }))
+    // From the list, a folded file opens again before the pane scrolls to it.
+    const open = (path: string) => () =>
+      void update($, view, cur => ({ ...cur, collapsed: cur.collapsed.filter(p => p !== path) })).then(() =>
+        scrollTo(`file:${path}`),
+      )
+    // With more than one file the step opens with a list of them: each name jumps to
+    // its diff, and each diff ends with a way back up to the list.
+    const hasSummary = shown.length > 1
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -252,15 +355,44 @@ export const register: Register = on => {
 
         {v.files.length === 0 && <Text dimColor>No changes in this step.</Text>}
 
+        {hasSummary && (
+          <Box key="summary" flexDirection="column">
+            {shown.map(file => (
+              <Box flexDirection="row" gap={1}>
+                <Button key={`goto:${file.path}`} plain dimColor onPress={open(file.path)}>
+                  {isFolded(file.path) ? `✓ ${file.path}` : file.path}
+                </Button>
+                <Text color="green" dimColor={isFolded(file.path)}>+{file.adds}</Text>
+                <Text color="red" dimColor={isFolded(file.path)}>{'−'}{file.dels}</Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+
         {shown.map(file => (
-          <Box flexDirection="column">
-            <Text bold color="cyan">{file.path}</Text>
-            {file.hunks ? (
-              <Code source={file.hunks} format="diff" path={file.path} />
-            ) : (
-              <Text dimColor>(binary or mode change)</Text>
+          <Box key={`file:${file.path}`} flexDirection="column">
+            <Box flexDirection="row" gap={1}>
+              <Button key={`fold:${file.path}`} plain onPress={fold(file.path)}>
+                {`${isFolded(file.path) ? '▸' : '▾'} ${file.path}`}
+              </Button>
+              <Text color="green" dimColor={isFolded(file.path)}>+{file.adds}</Text>
+              <Text color="red" dimColor={isFolded(file.path)}>{'−'}{file.dels}</Text>
+            </Box>
+            {!isFolded(file.path) && (
+              <Box flexDirection="column">
+                {file.hunks ? (
+                  <Code source={file.hunks} format="diff" path={file.path} />
+                ) : (
+                  <Text dimColor>(binary or mode change)</Text>
+                )}
+                {file.isCut && <Text dimColor>... cut: too long for one view</Text>}
+                {hasSummary && (
+                  <Button key={`top:${file.path}`} plain dimColor onPress={jump('summary')}>
+                    {'↑ Files'}
+                  </Button>
+                )}
+              </Box>
             )}
-            {file.isCut && <Text dimColor>... cut: too long for one view</Text>}
           </Box>
         ))}
         {v.files.length > MAX_FILES && <Text dimColor>+{v.files.length - MAX_FILES} more files</Text>}

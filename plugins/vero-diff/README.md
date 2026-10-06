@@ -98,6 +98,18 @@ project - see [Where snapshots live](#where-snapshots-live).
 The pane is a native part of Claude Code: a sidebar beside the transcript in the terminal,
 a panel in the desktop app. A header names the step and the prompt that produced it, and
 each changed file follows with its diff, highlighted the way Claude Code draws its own.
+When a step touched more than one file, it opens with a list of them and their `+`/`−`
+counts: click a name to jump to its diff, and **↑ Files** at the end of each diff takes
+you back up to the list.
+
+Click a file's name above its diff to fold it once you have read it: the diff closes to
+one line, and the file gets a `✓` in the list, so after an interruption you see at a
+glance which files are left. Folds belong to the step on screen only - showing another
+step, or a new turn arriving, means you are done with this one, and they are cleared.
+
+The newest step also sits in the status line under the prompt -
+`VeroDiff: turn 3 · 2 files · +5 −1` - so you see what the last turn did even with the
+pane closed.
 
 Steps are described the way you would describe them out loud:
 
@@ -128,9 +140,10 @@ A closed pane stays closed, in every later session too, until you run `/vero-dif
 In the terminal the pane opens by itself only in a window at least 144 columns wide;
 `/vero-diff` opens it at any width.
 
-`/vero-diff last` is also how Claude gets to see a diff: its output is part of the
-conversation, so you can follow it with "check what you changed in that turn". Very long
-diffs are cut there, to spare the context window; the pane always has the whole of it.
+Claude can read these diffs too. `/vero-diff last` puts one into the conversation, and
+VeroDiff also gives Claude a tool, `turn_diff`, so it can look up what an earlier turn
+changed by itself - ask "what did you change two turns ago?". Very long diffs are cut
+there, to spare the context window; the pane has more of each file.
 
 ## Updating
 
@@ -174,6 +187,10 @@ reads your files and honours `.gitignore`, but writes every object into the cach
 
 Override the location with `VERODIFF_DIR`.
 
+Old history clears itself: once a day, sessions whose newest snapshot is more than 30
+days old are dropped, and git reclaims their space two weeks later. `/vero-diff purge`
+clears the whole project at once.
+
 ## Concurrent sessions
 
 Each session gets its own ref (`refs/verodiff/session/<id>`), its own index file and its
@@ -181,142 +198,6 @@ own label file, so two terminals in one repository don't corrupt each other's st
 history. What they can't avoid is sharing a working tree: if both sessions edit files in
 the same checkout during the same turn, both sets of edits appear in the diff. For real
 isolation, give each session its own `git worktree`.
-
-## Develop and test locally
-
-There are two suites, and CI runs both. The first needs nothing but git and bash - no
-Claude Code, no network, no credentials:
-
-```bash
-tests/smoke.sh
-```
-
-It asserts the promises `snapshot.sh` makes: that a snapshot never adds an object to the
-project's own `.git`, that `.gitignore` is honoured, that a turn which changes nothing
-records nothing, and that the hook exits 0 even outside a git repository.
-
-The second runs the pane's TypeScript against Claude Code's own engine - still no account
-and no network:
-
-```bash
-claude plugin test ./plugins/vero-diff
-```
-
-It covers how steps are named and numbered (no internal `[pre]`/`[post]` marker may reach
-a user), how a diff is split per file, and which paths `/vero-diff purge` will delete.
-
-Then validate the structure. The two runs check different things - the marketplace
-catalog, and the plugin's own manifest, hooks and component directories:
-
-```bash
-claude plugin validate .                    # marketplace.json
-claude plugin validate ./plugins/vero-diff  # plugin.json, hooks module, state contract
-claude plugin validate . --strict           # treat warnings as errors, for CI
-```
-
-Then load the plugin for one session, with no install and no marketplace:
-
-```bash
-cd /some/test/repo
-claude --plugin-dir /path/to/verodiff/plugins/vero-diff
-```
-
-Inside that session `/plugin` should show VeroDiff as loaded and `/vero-diff` should
-open the pane. Send any prompt that edits a file and watch the step appear. A
-`--plugin-dir` folder is watched: saving a plugin file reloads the hooks module, with no
-restart. If the module fails to load or a hook fails, a dim `vero-diff: ...` line in the
-transcript says why, and `claude --debug` has the details.
-
-A `--plugin-dir` plugin shadows an installed plugin of the same name for that session, so
-you can test changes without uninstalling the released copy.
-
-If anything behaves oddly under `--plugin-dir`, fall back to the full path, which also
-exercises the marketplace layout:
-
-```
-/plugin marketplace add /path/to/VeroDiff
-/plugin install vero-diff@verodiff-marketplace
-```
-
-A local-directory marketplace loads the plugin **in place** rather than copying it into
-the cache, so your edits apply at the next `/reload-plugins` with no version bump.
-
-### What CI checks
-
-`.github/workflows/ci.yml` runs on every push and pull request:
-
-| Job | Checks |
-| :-- | :-- |
-| **Plugin manifests** | all three `claude plugin validate` runs, `--strict` included, and `claude plugin test` |
-| **Shell lint** | `bash -n` and ShellCheck (`-S warning`) over every script |
-| **Smoke** | `tests/smoke.sh` on Linux *and* macOS - macOS matters, because `snapshot.sh` takes its `md5 -q` branch there rather than `md5sum` |
-| **Line endings** | re-clones with `core.autocrlf=true`, the Windows default, and proves the scripts still have LF endings, are executable, and run |
-
-## Share it
-
-VeroDiff is already a marketplace repository, so publishing is just pushing it:
-
-```bash
-git init && git add . && git commit -m "VeroDiff <version>"
-git remote add origin https://github.com/GomelHawk/VeroDiff
-git push -u origin main
-```
-
-Users then need two lines:
-
-```
-/plugin marketplace add GomelHawk/VeroDiff
-/plugin install vero-diff@verodiff-marketplace
-```
-
-Any git host works - GitLab, Bitbucket, self-hosted - with the full URL instead of the
-`owner/repo` shorthand.
-
-Forking this for your own plugin? The fields to change are `owner.name` in
-`.claude-plugin/marketplace.json`, `author.name`, `homepage` and `repository` in
-`plugins/vero-diff/.claude-plugin/plugin.json`, and the copyright line in `LICENSE`.
-
-### Releasing updates
-
-`version` in `plugin.json` pins the plugin: users keep their cached copy until that string
-changes, so bump it on every release. Never set `version` in both `plugin.json` and the
-marketplace entry - `plugin.json` silently wins.
-
-Never change the plugin's `name` without adding a `renames` entry to `marketplace.json`;
-the name is what users' `enabledPlugins` keys on.
-
-A useful CI step is `claude plugin validate . --strict` on every push.
-
-### Other distribution routes
-
-- **Teams**: commit `extraKnownMarketplaces` and `enabledPlugins` to a repo's
-  `.claude/settings.json`, and everyone who trusts that folder gets VeroDiff with no
-  separate prompt.
-- **Wider audience**: submit VeroDiff to
-  [Anthropic's directory](https://claude.ai/directory), the catalog people browse on
-  claude.ai and in Cowork. One listing reaches claude.ai, Cowork and Claude Code, where
-  it loads through account sync as `vero-diff@synced`. Submit from the developer portal
-  at [claude.ai/directory/manage](https://claude.ai/directory/manage), following
-  [Submit a plugin](https://claude.com/docs/plugins/submit#submit-a-plugin). It needs a
-  paid claude.ai plan: on Pro and Max you submit from your own account, on Team and
-  Enterprise an Owner does (or, on Enterprise, a member the Owner gave the **Directory**
-  permission). The portal applies rules of its own on top of `claude plugin validate`,
-  so run the
-  [pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist#run-the-checks-before-you-submit)
-  first. VeroDiff is a Claude Code mod, so say in the listing that it works in Claude
-  Code only - the terminal and the desktop app's Code tab - and check the
-  [component support table](https://claude.com/docs/plugins/platform-support#compare-component-support-by-app)
-  for what claude.ai and Cowork load. The official `claude-plugins-official`
-  marketplace takes no submissions through the portal; Anthropic decides what goes in
-  it, through its partner contacts.
-- **No git on the user's machine**: publish a zip and list it with an `archive` source
-  plus a `sha256` pin.
-
-Reserved marketplace names (`claude-plugins-official`, `anthropic-plugins`, and similar)
-can't be used, which is why this catalog is called `verodiff-marketplace`.
-
-VeroDiff has no top-level `bin/` directory, which claude.ai **organization settings**
-distribution would reject, so that route takes it as it is.
 
 ## Uninstall
 
@@ -339,15 +220,14 @@ clean up by hand.
 | `n` / `p` do nothing | The keys belong to the pane once it has the focus: click it, or `Ctrl+x` then `Tab`. The buttons always work. |
 | A turn shows edits you did not ask for | Either you changed files yourself between turns - those appear as `edits outside a turn` - or a second session shares this working tree. See [Concurrent sessions](#concurrent-sessions). |
 | A turn you expected is missing | A turn that changed nothing records no step, by design. |
-| A step is cut short | One file's diff is cut at about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
+| A step is cut short | One file's diff is cut to whole hunks of about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
 | Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. |
 
 ## Requirements
 
-A Claude Code release that runs plugin hooks modules - VeroDiff 1.0 was built against
-2.1.286 - plus git and bash, including the bash 3.2 that macOS ships, so nothing needs
-installing there. `jq` or `python3` is used to read the prompt text for a step's title;
-without either, steps are still recorded but unlabeled.
+A Claude Code release that runs plugin hooks modules - VeroDiff 1.1 is tested against
+2.1.288 - plus git and bash, including the bash 3.2 that macOS ships. Nothing else needs
+installing.
 
 ## Upgrading from 0.1.x
 
@@ -394,6 +274,11 @@ What changes for you:
 `VERODIFF_DIR` still works as before. Claude Code may keep the 0.1.x copy in
 `~/.claude/plugins/cache/verodiff-marketplace/vero-diff/0.1.1/`. It is unused, and you can
 delete it.
+
+## Contributing
+
+How to test changes, what CI checks and how releases reach users are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

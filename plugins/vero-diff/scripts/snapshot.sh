@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# Snapshot the working tree into a shadow repository outside the project.
-# Invoked by the UserPromptSubmit (pre) and Stop (post) hooks.
-# Never writes a single object into the project's own .git.
+# The one place that knows where VeroDiff's snapshots live and how they are taken.
+# The plugin's hooks module runs it; it never writes a single object into the project's
+# own .git, and always exits 0 so it can never get in the way of a turn.
+#
+#   snapshot.sh pre          snapshot the working tree as a turn starts
+#   snapshot.sh post         snapshot it as the turn ends
+#   snapshot.sh where        print the shadow repository's path, take nothing
+#   snapshot.sh prune DAYS   drop sessions whose newest snapshot is older than DAYS
+#
+# Input comes from the environment, so no JSON parser is needed:
+#   VERODIFF_SESSION_ID   the session's id (its ref, index and label are its own)
+#   VERODIFF_PROMPT       the prompt that started the turn, for a `pre` snapshot
+#   CLAUDE_PROJECT_DIR    the project; the current directory when unset
+#   VERODIFF_DIR          where snapshots live; ~/.cache/verodiff when unset
 set -uo pipefail
 
 KIND="${1:-snap}"
-STDIN_JSON="$(cat 2>/dev/null || true)"
 
 cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || exit 0
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
@@ -17,28 +27,43 @@ if command -v md5sum >/dev/null 2>&1;  then key="$(printf '%s' "$TOP" | md5sum |
 elif command -v md5 >/dev/null 2>&1;   then key="$(printf '%s' "$TOP" | md5 -q | cut -c1-12)"
 else key="$(printf '%s' "$TOP" | cksum | cut -d' ' -f1)"; fi
 SHADOW="$CACHE/$(basename "$TOP")-$key.git"
+
+[ "$KIND" = "where" ] && { printf '%s\n' "$SHADOW"; exit 0; }
+
+sid="$(printf '%s' "${VERODIFF_SESSION_ID:-}" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
+[ -n "$sid" ] || sid="default"
+
+# --- drop stale sessions ---------------------------------------------------
+# A session whose newest snapshot is older than DAYS loses its ref, index and label.
+# Its objects go at the next gc once they are two weeks unreferenced - never sooner,
+# so a snapshot another session is writing right now can never lose an object.
+if [ "$KIND" = "prune" ]; then
+  [ -d "$SHADOW" ] || exit 0
+  days="${2:-30}"
+  case "$days" in ''|*[!0-9]*) exit 0 ;; esac
+  cutoff=$(( $(date +%s) - days * 86400 ))
+  export GIT_DIR="$SHADOW"
+  dropped=0
+  while IFS=' ' read -r when ref; do
+    old="${ref#refs/verodiff/session/}"
+    [ "$old" = "$sid" ] && continue          # never the session asking
+    [ "$when" -lt "$cutoff" ] 2>/dev/null || continue
+    git update-ref -d "$ref" >/dev/null 2>&1 && dropped=$((dropped+1))
+    rm -f "$SHADOW/index-$old" "$SHADOW/label-$old"
+  done < <(git for-each-ref --format='%(committerdate:unix) %(refname)' refs/verodiff/session 2>/dev/null)
+  [ "$dropped" -gt 0 ] && git gc --quiet --prune=2.weeks.ago >/dev/null 2>&1
+  exit 0
+fi
+
 [ -d "$SHADOW" ] || git init -q --bare "$SHADOW" 2>/dev/null || exit 0
 printf '%s\n' "$TOP" > "$SHADOW/project-path" 2>/dev/null
 
 export GIT_DIR="$SHADOW" GIT_WORK_TREE="$TOP"
 
-# --- prompt text and session id, for per-session isolation -----------------
-label=""; sid=""
-if [ -n "$STDIN_JSON" ]; then
-  if command -v jq >/dev/null 2>&1; then
-    label="$(printf '%s' "$STDIN_JSON" | jq -r '.prompt // ""' 2>/dev/null)"
-    sid="$(printf '%s' "$STDIN_JSON" | jq -r '.session_id // ""' 2>/dev/null)"
-  elif command -v python3 >/dev/null 2>&1; then
-    label="$(printf '%s' "$STDIN_JSON" | python3 -c \
-      'import sys,json;print(json.load(sys.stdin).get("prompt",""))' 2>/dev/null)"
-    sid="$(printf '%s' "$STDIN_JSON" | python3 -c \
-      'import sys,json;print(json.load(sys.stdin).get("session_id",""))' 2>/dev/null)"
-  fi
-fi
-sid="$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-' | cut -c1-64)"
-[ -n "$sid" ] || sid="default"
-
-label="$(printf '%s' "$label" | tr '\n\r\t' '   ' | cut -c1-100)"
+# --- the prompt, kept per session for the `post` snapshot that follows ------
+# The module hands it over already cut to length, by characters. Never shorten it here:
+# `cut -c` counts bytes and splits a multi-byte character, Cyrillic or emoji alike.
+label="$(printf '%s' "${VERODIFF_PROMPT:-}" | tr '\n\r\t' '   ')"
 LABEL_FILE="$SHADOW/label-$sid"
 if [ -n "$label" ]; then printf '%s' "$label" > "$LABEL_FILE" 2>/dev/null
 else label="$(cat "$LABEL_FILE" 2>/dev/null || true)"; fi
