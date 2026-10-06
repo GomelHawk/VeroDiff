@@ -40,7 +40,7 @@ verodiff/                                  marketplace repo root
 ├── .gitattributes                         forces LF: snapshot.sh and the scripts are bash
 ├── .github/workflows/ci.yml               manifests + plugin test, shell lint, smoke, endings
 ├── .github/dependabot.yml                 watches the CI actions; there are no deps
-├── assets/                                promo.png (README hero), logos
+├── assets/                                promo2.png (README hero), promo.png (0.1.x), logos
 ├── tests/smoke.sh                         snapshot.sh's suite: git + bash only
 ├── install.sh                             validate -> marketplace add -> plugin install
 ├── uninstall.sh                           plugin uninstall (+ --purge for snapshots)

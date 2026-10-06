@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/GomelHawk/VeroDiff/main/assets/promo.png"
-       alt="VeroDiff - see exactly what changed in each turn. A Claude Code plugin that shows the real diff for every turn."
+  <img src="https://raw.githubusercontent.com/GomelHawk/VeroDiff/main/assets/promo2.png"
+       alt="VeroDiff, now a mod: every turn's diff in a native Claude Code pane - the same pane in the terminal and in the desktop app."
        width="900">
 </p>
 
