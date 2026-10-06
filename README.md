@@ -16,8 +16,9 @@ with syntax highlighting, instead of one undifferentiated pile of uncommitted wo
 
 The built-in `/diff` shows everything uncommitted at once, because it has no notion of
 "where this turn started". VeroDiff creates that boundary: it snapshots the working tree
-when you submit a prompt and again when Claude finishes, so the diff of a turn is just
-`git diff` between two snapshots.
+when a turn starts and again when Claude finishes, so the diff of a turn is just
+`git diff` between two snapshots. Each turn's diff is drawn in a side pane, in the
+terminal and in the desktop app's Code tab alike.
 
 Snapshots are stored outside your project. Your `.git` is never written to.
 
@@ -57,8 +58,8 @@ claude plugin marketplace add GomelHawk/VeroDiff
 claude plugin install vero-diff@verodiff-marketplace
 ```
 
-To confirm it took, run `/hooks`: you should see two `snapshot.sh` entries, one under
-`UserPromptSubmit` and one under `Stop`. Those are the two boundaries of a turn.
+To confirm it took, type `/vero-diff`: the command should be in the list, and running it
+opens the VeroDiff pane.
 
 <details>
 <summary>Installing from a clone instead</summary>
@@ -77,8 +78,9 @@ everyone who trusts that folder gets VeroDiff without installing anything themse
 
 1. Open Claude Code in any git repository.
 2. Ask it to change a file.
-3. Run **`/vero-diff:lastdiff`** - the diff of that one turn is printed into the chat.
-4. Run **`/vero-diff:steps`** - a pane opens beside you and redraws after every turn.
+3. When the turn ends, the VeroDiff pane shows its diff. If the pane is not open, run
+   **`/vero-diff`**.
+4. Run **`/vero-diff last`** to print the same diff into the chat instead.
 
 VeroDiff only sees turns that happen after it is installed, so your first recorded turn is
 the next thing you ask for. It reads your working tree and writes nothing into your
@@ -88,101 +90,47 @@ project - see [Where snapshots live](#where-snapshots-live).
 
 | Command | What it does |
 | :-- | :-- |
-| `/vero-diff:steps` | Opens a side pane that redraws the diff after every turn |
-| `/vero-diff:lastdiff` | Prints the latest turn's summary and its full diff into the chat |
-| `/vero-diff:lastdiff 2` | Same, for the step two turns back |
-| `/vero-diff:purge` | Deletes this project's snapshot history |
+| `/vero-diff` | Opens the pane: this session's steps, newest first, each with its full diff |
+| `/vero-diff last` | Prints the latest turn's summary and its full diff into the chat |
+| `/vero-diff last 2` | Same, for step 2 - the steps are numbered as the pane numbers them |
+| `/vero-diff purge` | Deletes this project's snapshot history, every session's |
 
-The pane is a full-screen browser: the diff fills the window, a header names the step and
-the prompt that produced it, and a key bar sits on the last row at all times.
+The pane is a native part of Claude Code: a sidebar beside the transcript in the terminal,
+a panel in the desktop app. A header names the step and the prompt that produced it, and
+each changed file follows with its diff, highlighted the way Claude Code draws its own.
 
 Steps are described the way you would describe them out loud:
 
 ```
-  0  2 minutes ago   turn 3  "add a random word to a.txt"
-                     a.txt
-  1  6 minutes ago   edits outside a turn
-                     a.txt
-  2  9 minutes ago   session baseline
-                     a.txt, notes.md
+turn 3  "add a random word to a.txt"
+edits outside a turn
+turn 2  "rename the helper"
 ```
 
 A **turn** is one exchange: everything that changed between you pressing enter and Claude
 finishing. Turns are numbered from the start of the session, so `turn 3` stays `turn 3`
 even as newer steps push it down the list. **Edits outside a turn** are changes that were
-already on disk before a turn ran - your own edits, or a turn that was interrupted before
-it finished - so they are not attributed to any prompt. The **session baseline** is the
-tree as it stood when the session began.
+already on disk before a turn ran - your own edits, typically - so they are not attributed
+to any prompt. A turn that changed nothing is no step at all.
 
-| Key | Action |
-| :-- | :-- |
-| `j` / `k` or arrows | scroll a line |
-| `space` / `b` | scroll a page |
-| `g` / `G` | jump to top / bottom |
-| `n` / `p` | previous / next step, without leaving the window |
-| `r` | reload the step list |
-| `q` | quit |
+| Button | Key | Action |
+| :-- | :-- | :-- |
+| **Older** | `p` | the step before this one |
+| **Newer** | `n` | the step after this one |
+| **Latest** | `l` | back to the newest step |
+| **Refresh** | `r` | read the snapshots again |
+| **Hide** | `h` | close the pane (terminal only - the desktop app has its own close button) |
 
-While you sit on the newest step, a turn that lands is picked up automatically. While you
-are browsing older steps, it isn't - the key bar shows `* new step, press r` instead, so
-scrolling through history is never yanked out from under you. `--follow` always jumps to
-the newest turn.
+The keys work once the pane has the focus: click it, or press `Ctrl+x` then `Tab`. Scroll
+a long diff with the mouse wheel. When a turn ends, the pane moves to it by itself.
 
-`q` or `Ctrl+C` closes the viewer and restores your terminal.
+A closed pane stays closed, in every later session too, until you run `/vero-diff` again.
+In the terminal the pane opens by itself only in a window at least 144 columns wide;
+`/vero-diff` opens it at any width.
 
-Only one viewer runs per project. If one is already open, `/vero-diff:steps` says so and
-reuses it rather than opening a second window - in tmux it focuses that pane for you.
-
-### Moving between the pane and Claude
-
-VeroDiff only asks your terminal for a split. Moving focus, resizing and closing that pane
-stay your terminal's job, so the keys are its keys, not the plugin's. These are the shipped
-defaults - if you have remapped them, yours win.
-
-| Terminal | Move focus | Resize | Close the pane |
-| :-- | :-- | :-- | :-- |
-| **tmux** | `Ctrl+b` then an arrow (`Ctrl+b o` cycles, `Ctrl+b q` numbers them) | `Ctrl+b` then `Ctrl`+arrow for one cell, or `Alt`+arrow for five | `Ctrl+b x` |
-| **Windows Terminal** (including WSL) | `Alt`+arrow | `Alt+Shift`+arrow | `Ctrl+Shift+W` |
-| **WezTerm** | `Ctrl+Shift`+arrow | `Ctrl+Shift+Alt`+arrow | `Ctrl+Shift+W` |
-| **kitty** | `Ctrl+Shift+[` and `Ctrl+Shift+]` | `Ctrl+Shift+R`, then arrows, `Esc` to finish | `Ctrl+Shift+W` |
-| **macOS Terminal** | a separate window: `Cmd+` `` ` `` cycles windows | drag the window edge | close the window |
-| **Any other Linux terminal** | a separate window: your window manager, usually `Alt+Tab` | drag the window edge | close the window |
-
-In every one of them, `q` inside the viewer also closes it, which is usually quicker than
-reaching for the terminal's own binding.
-
-Two tmux extras worth knowing, since the pane is often narrower than a diff: `Ctrl+b z`
-zooms it to fill the whole window and again to put it back, and with `set -g mouse on` you
-can drag the border between panes.
-
-### How wide the pane opens
-
-Set `VERODIFF_PANE_SIZE` to a percentage of the window before starting Claude Code:
-
-```bash
-export VERODIFF_PANE_SIZE=35     # default 50, clamped to 10-90; "35%" works too
-claude
-```
-
-tmux, Windows Terminal and WezTerm honour it. kitty, macOS Terminal and the generic Linux
-fallback open a separate window instead of a split, so they ignore it - size those the way
-you size any other window.
-
-It picks up `delta` automatically if you have it installed, and renders on an alternate
-screen so your shell scrollback survives.
-
-The same viewer works from any terminal, since the plugin's `bin/` is on the Bash tool's
-PATH while the plugin is enabled:
-
-```
-verodiff              browser
-verodiff --follow     browser that jumps to each new turn
-verodiff -l           list steps
-verodiff -n 3         diff of step 3
-verodiff --sessions   list sessions that have snapshots
-verodiff --where      where snapshots live, and how big they are
-verodiff --purge-all  delete every snapshot cache
-```
+`/vero-diff last` is also how Claude gets to see a diff: its output is part of the
+conversation, so you can follow it with "check what you changed in that turn". Very long
+diffs are cut there, to spare the context window; the pane always has the whole of it.
 
 ## Updating
 
@@ -220,7 +168,7 @@ explicitly when there is nothing newer.
 ## Where snapshots live
 
 Not in your project. Each project gets its own bare repository under `~/.cache/verodiff/`,
-and the hook points `GIT_DIR` there while pointing `GIT_WORK_TREE` at your project. Git
+and the snapshot script points `GIT_DIR` there while pointing `GIT_WORK_TREE` at your project. Git
 reads your files and honours `.gitignore`, but writes every object into the cache. Your
 `.git`, `git status`, `git log --all` and `git push` are untouched.
 
@@ -236,24 +184,33 @@ isolation, give each session its own `git worktree`.
 
 ## Develop and test locally
 
-Run the test suite first. It needs nothing but git and bash - no Claude Code, no network,
-no credentials - and it is the same script CI runs:
+There are two suites, and CI runs both. The first needs nothing but git and bash - no
+Claude Code, no network, no credentials:
 
 ```bash
 tests/smoke.sh
 ```
 
-It asserts the promises the plugin makes: that a snapshot never adds an object to the
-project's own `.git`, that `.gitignore` is honoured, that every `verodiff` mode exits 0
-(a non-zero exit aborts a skill invocation), and that no internal `[pre]`/`[post]` marker
-leaks into what a user reads.
+It asserts the promises `snapshot.sh` makes: that a snapshot never adds an object to the
+project's own `.git`, that `.gitignore` is honoured, that a turn which changes nothing
+records nothing, and that the hook exits 0 even outside a git repository.
+
+The second runs the pane's TypeScript against Claude Code's own engine - still no account
+and no network:
+
+```bash
+claude plugin test ./plugins/vero-diff
+```
+
+It covers how steps are named and numbered (no internal `[pre]`/`[post]` marker may reach
+a user), how a diff is split per file, and which paths `/vero-diff purge` will delete.
 
 Then validate the structure. The two runs check different things - the marketplace
 catalog, and the plugin's own manifest, hooks and component directories:
 
 ```bash
 claude plugin validate .                    # marketplace.json
-claude plugin validate ./plugins/vero-diff  # plugin.json, hooks.json, skills
+claude plugin validate ./plugins/vero-diff  # plugin.json, hooks module, state contract
 claude plugin validate . --strict           # treat warnings as errors, for CI
 ```
 
@@ -264,9 +221,11 @@ cd /some/test/repo
 claude --plugin-dir /path/to/verodiff/plugins/vero-diff
 ```
 
-Inside that session: `/hooks` should list the two snapshot hooks, and `/plugin` should
-show VeroDiff as loaded. Send any prompt that edits a file, then run `/vero-diff:steps`.
-After editing plugin files, run `/reload-plugins` instead of restarting.
+Inside that session `/plugin` should show VeroDiff as loaded and `/vero-diff` should
+open the pane. Send any prompt that edits a file and watch the step appear. A
+`--plugin-dir` folder is watched: saving a plugin file reloads the hooks module, with no
+restart. If the module fails to load or a hook fails, a dim `vero-diff: ...` line in the
+transcript says why, and `claude --debug` has the details.
 
 A `--plugin-dir` plugin shadows an installed plugin of the same name for that session, so
 you can test changes without uninstalling the released copy.
@@ -288,7 +247,7 @@ the cache, so your edits apply at the next `/reload-plugins` with no version bum
 
 | Job | Checks |
 | :-- | :-- |
-| **Plugin manifests** | all three `claude plugin validate` runs, `--strict` included |
+| **Plugin manifests** | all three `claude plugin validate` runs, `--strict` included, and `claude plugin test` |
 | **Shell lint** | `bash -n` and ShellCheck (`-S warning`) over every script |
 | **Smoke** | `tests/smoke.sh` on Linux *and* macOS - macOS matters, because `snapshot.sh` takes its `md5 -q` branch there rather than `md5sum` |
 | **Line endings** | re-clones with `core.autocrlf=true`, the Windows default, and proves the scripts still have LF endings, are executable, and run |
@@ -352,53 +311,85 @@ A useful CI step is `claude plugin validate . --strict` on every push.
 Reserved marketplace names (`claude-plugins-official`, `anthropic-plugins`, and similar)
 can't be used, which is why this catalog is called `verodiff-marketplace`.
 
-VeroDiff's top-level `bin/` directory is fine for this marketplace and for the community
-marketplace. Only claude.ai **organization settings** distribution rejects it, so the
-restructuring described in
-[Note for organization distribution](#note-for-organization-distribution) is needed for
-that route alone.
+VeroDiff has no top-level `bin/` directory, which claude.ai **organization settings**
+distribution would reject, so that route takes it as it is.
 
 ## Uninstall
 
 ```bash
-./uninstall.sh            # removes hooks and skills, keeps snapshots
+./uninstall.sh            # removes the plugin, keeps snapshots
 ./uninstall.sh --purge    # also deletes every snapshot cache
 ```
 
-`claude plugin uninstall` removes the hooks and skills on its own - there is no settings
-file to clean up by hand.
+`claude plugin uninstall` removes the plugin on its own - there is no settings file to
+clean up by hand.
 
 ## Troubleshooting
 
 | What you see | What it means |
 | :-- | :-- |
-| `No snapshots yet` | The hooks have not run. Check `/hooks` lists two `snapshot.sh` entries, then send one prompt. |
-| `/hooks` lists nothing for VeroDiff | Claude Code was not restarted after installing. Restart it, or run `/reload-plugins`. |
-| `not a git repository - nothing to show` | VeroDiff diffs a git working tree; there is nothing to snapshot outside one. |
-| The pane never opens | No supported terminal was detected. Run `verodiff` yourself in a second terminal - it is the same viewer. |
-| `verodiff: command not found` | The plugin's `bin/` is on `PATH` only while the plugin is enabled. Check `/plugin`. |
+| `No changes in this session yet.` | No turn of this session has changed a file. Ask for an edit; the step appears when the turn ends. |
+| `/vero-diff` is not in the command list | Claude Code was not restarted after installing, or the plugin is disabled. Check `/plugin`. A dim `vero-diff: ...` line in the transcript names a module that failed to load. |
+| `Not a git repository.` | VeroDiff diffs a git working tree; there is nothing to snapshot outside one. The pane does not open by itself there. |
+| The pane does not open by itself | You closed it once, and that is remembered: run `/vero-diff`. In the terminal it also waits for a window at least 144 columns wide. |
+| `n` / `p` do nothing | The keys belong to the pane once it has the focus: click it, or `Ctrl+x` then `Tab`. The buttons always work. |
 | A turn shows edits you did not ask for | Either you changed files yourself between turns - those appear as `edits outside a turn` - or a second session shares this working tree. See [Concurrent sessions](#concurrent-sessions). |
-| The pane is stuck on an older turn | You are browsing history, so new turns do not yank the view. The key bar says `* new step, press r`; press `r`. |
 | A turn you expected is missing | A turn that changed nothing records no step, by design. |
-| Snapshots are taking up space | `verodiff --where` shows the location and size, `/vero-diff:purge` clears this project, `verodiff --purge-all` clears every project. |
+| A step is cut short | One file's diff is cut at about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
+| Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. |
 
 ## Requirements
 
-git and bash - including the bash 3.2 that macOS ships, so nothing needs installing
-there - and optionally `delta` for nicer diffs and `tmux`, WezTerm, kitty or Windows
-Terminal for the side pane. Under WSL the pane opens through `wsl.exe`, so Windows
-Terminal can reach your Linux working directory. Without any of them the viewer still
-runs - `verodiff` in a second terminal does the same job. See
-[Moving between the pane and Claude](#moving-between-the-pane-and-claude) for the keys
-each terminal uses to switch and resize. `jq` or `python3` is used to read the prompt text out of the
-hook payload; without either, steps are still recorded but unlabeled.
+A Claude Code release that runs plugin hooks modules - VeroDiff 1.0 was built against
+2.1.286 - plus git and bash, including the bash 3.2 that macOS ships, so nothing needs
+installing there. `jq` or `python3` is used to read the prompt text for a step's title;
+without either, steps are still recorded but unlabeled.
 
-## Note for organization distribution
+## Upgrading from 0.1.x
 
-claude.ai rejects plugins that ship a top-level `bin/` directory. If you distribute this
-through **Organization settings > Plugins**, move `bin/verodiff` and `bin/verodiff-pane`
-into `scripts/` and update the skills to call `${CLAUDE_PLUGIN_ROOT}/scripts/<name>`
-instead of the bare command.
+1.0 keeps the plugin's name and marketplace, so upgrading is an ordinary update. Nothing
+needs uninstalling first, and your snapshots stay where they are.
+
+**1. Update Claude Code itself**, because 1.0 needs a release that runs plugin hooks
+modules. In a shell:
+
+```bash
+claude update
+```
+
+**2. Close the old viewer** if one is open in a tmux pane, a Windows Terminal split or a
+separate window. Press `q` in it. 1.0 no longer ships that viewer.
+
+**3. Update the plugin** inside Claude Code, **one command at a time**:
+
+```
+/plugin marketplace update verodiff-marketplace
+```
+
+```
+/plugin update vero-diff@verodiff-marketplace
+```
+
+**4. Restart Claude Code.** `claude plugin list` should now show `Version: 1.0.0`, and
+`/vero-diff` should be in the command list.
+
+Installed from a clone with `./install.sh`? Run `git pull` in the clone instead of step 3,
+then restart.
+
+What changes for you:
+
+| In 0.1.x | In 1.0 |
+| :-- | :-- |
+| `/vero-diff:steps` | `/vero-diff` - the pane opens by itself, too |
+| `/vero-diff:lastdiff [N]` | `/vero-diff last [N]` - step 1 is the newest, as in the pane |
+| `/vero-diff:purge` | `/vero-diff purge` |
+| `verodiff` in a shell, `--purge-all` | gone; `./uninstall.sh --purge` still deletes every project's snapshots |
+| two `snapshot.sh` entries in `/hooks` | none - the plugin's hooks module takes the snapshots |
+| `VERODIFF_PANE_SIZE` | ignored; drag the pane's border instead. Remove it from your shell profile if you like |
+
+`VERODIFF_DIR` still works as before. Claude Code may keep the 0.1.x copy in
+`~/.claude/plugins/cache/verodiff-marketplace/vero-diff/0.1.1/`. It is unused, and you can
+delete it.
 
 ## License
 

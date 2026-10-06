@@ -19,14 +19,13 @@ echo "Registering the marketplace..."
 claude plugin marketplace add "$HERE"
 
 echo
-echo "The plugin adds two hooks. Claude Code will show them before you confirm:"
-echo "  UserPromptSubmit -> scripts/snapshot.sh pre    (snapshot before your prompt is processed)"
-echo "  Stop             -> scripts/snapshot.sh post   (snapshot when Claude finishes the turn)"
+echo "The plugin is a mod: one hooks module that snapshots the working tree when a turn"
+echo "starts and when it ends (scripts/snapshot.sh), and draws each turn's diff in a pane."
 echo
 claude plugin install "vero-diff@verodiff-marketplace" --scope "$SCOPE"
 
 echo
 echo "Installed. Restart Claude Code, then:"
-echo "  /vero-diff:steps      open the live diff pane"
-echo "  /vero-diff:lastdiff   show the latest turn in chat"
-echo "  /hooks                verify the two hooks are registered"
+echo "  /vero-diff            open the pane: every turn's diff, newest first"
+echo "  /vero-diff last [N]   print a turn's diff into the chat"
+echo "  /vero-diff purge      delete this project's snapshots"

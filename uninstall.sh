@@ -10,7 +10,7 @@ PURGE=0
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found on PATH"; exit 1; }
 CACHE="${VERODIFF_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/verodiff}"
 
-echo "Uninstalling the plugin (this removes its hooks and skills)..."
+echo "Uninstalling the plugin (this removes its hooks module and command)..."
 claude plugin uninstall "vero-diff@verodiff-marketplace" || true
 
 echo "Removing the marketplace registration..."
@@ -29,7 +29,7 @@ if [ "$PURGE" = 1 ]; then
 else
   echo
   echo "Snapshots were left in place at: $CACHE"
-  echo "Delete them later with: ./uninstall.sh --purge   (or: verodiff --purge-all)"
+  echo "Delete them later with: ./uninstall.sh --purge"
 fi
 
 echo

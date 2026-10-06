@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.0.0 - 2026-10-05
+
+VeroDiff now lives inside Claude Code: each turn's diff is drawn in a native side pane,
+in the terminal and in the desktop app's Code tab alike.
+
+### New
+
+- **A built-in pane.** A sidebar beside the transcript in the terminal, a panel in the
+  desktop app - no separate terminal window, split or tty needed. It names each step after
+  the prompt that produced it and shows every changed file with its highlighted diff.
+- **It follows you.** When a turn ends the pane moves to it by itself. **Older**,
+  **Newer**, **Latest** and **Refresh** walk the steps, by mouse or with `p`, `n`, `l`,
+  `r` once the pane has the focus.
+- **It remembers being closed.** Close it - with **Hide** (`h`) in the terminal, or the
+  desktop app's own close button - and it stays closed in later sessions until you run
+  `/vero-diff`.
+- **One command:** `/vero-diff` opens the pane, `/vero-diff last [N]` prints a step's
+  summary and full diff into the chat - where Claude can read it too - and
+  `/vero-diff purge` deletes this project's snapshots.
+
+### Changed
+
+- The session's first snapshot is no longer listed as a "session baseline" step. Its diff
+  was the entire project - no edit, and on a large repository a very large one. It is
+  still taken, as the point the first turn is measured from.
+- Snapshots are taken when a turn starts and when it ends, by the plugin's hooks module
+  rather than by two command hooks, so `/hooks` no longer lists VeroDiff. A turn you
+  interrupt now ends a step of its own.
+- Organization distribution through claude.ai works as shipped: there is no top-level
+  `bin/` any more.
+
+### Removed
+
+- `/vero-diff:steps`, `/vero-diff:lastdiff` and `/vero-diff:purge` - use `/vero-diff`,
+  `/vero-diff last [N]` and `/vero-diff purge`.
+- The `verodiff` command and its full-screen terminal viewer, the external panes it opened
+  in tmux, Windows Terminal, WezTerm and kitty, and `VERODIFF_PANE_SIZE`.
+  `./uninstall.sh --purge` still deletes every project's snapshots.
+
+Snapshots taken by 0.1.x stay where they were, in the same format; `VERODIFF_DIR` still
+sets where they live. Requires a Claude Code release that runs plugin hooks modules.
+
 ## 0.1.1 - 2026-09-18
 
 Repairs a failure that made the viewer unusable on macOS.

@@ -31,11 +31,15 @@ jobs:
       - name: Validate the marketplace catalog
         run: claude plugin validate .
 
-      - name: Validate the plugin manifest, hooks and skills
+      - name: Validate the plugin manifest, hooks module and state contract
         run: claude plugin validate ./plugins/vero-diff
 
       - name: Validate again, warnings as errors
         run: claude plugin validate . --strict
+
+      # The pane's TypeScript, run against the engine itself: no account, no API key.
+      - name: Test the hooks module
+        run: claude plugin test ./plugins/vero-diff
 
   shell:
     name: Shell lint
@@ -46,9 +50,7 @@ jobs:
       - name: Parse every script
         run: |
           for f in install.sh uninstall.sh tests/smoke.sh \
-                   plugins/vero-diff/scripts/snapshot.sh \
-                   plugins/vero-diff/bin/verodiff \
-                   plugins/vero-diff/bin/verodiff-pane; do
+                   plugins/vero-diff/scripts/snapshot.sh; do
             echo "bash -n $f"
             bash -n "$f"
           done
@@ -58,9 +60,7 @@ jobs:
           shellcheck --version
           shellcheck -s bash -S warning \
             install.sh uninstall.sh tests/smoke.sh \
-            plugins/vero-diff/scripts/snapshot.sh \
-            plugins/vero-diff/bin/verodiff \
-            plugins/vero-diff/bin/verodiff-pane
+            plugins/vero-diff/scripts/snapshot.sh
 
   smoke:
     # macOS is not decoration: snapshot.sh picks `md5 -q` over `md5sum` there, and that
@@ -91,14 +91,13 @@ jobs:
         run: |
           bad=0
           for f in install.sh uninstall.sh tests/smoke.sh \
-                   plugins/vero-diff/scripts/snapshot.sh \
-                   plugins/vero-diff/bin/verodiff \
-                   plugins/vero-diff/bin/verodiff-pane; do
+                   plugins/vero-diff/scripts/snapshot.sh; do
             if grep -q $'\r$' "$f"; then echo "CRLF in $f"; bad=1; else echo "LF ok: $f"; fi
             if [ ! -x "$f" ]; then echo "not executable: $f"; bad=1; fi
           done
           exit "$bad"
 
-      - name: The scripts actually run from that clone
+      # Outside a git repository the hook has nothing to snapshot and must still exit 0.
+      - name: The snapshot hook actually runs from that clone
         working-directory: checkout
-        run: ./plugins/vero-diff/bin/verodiff --help
+        run: CLAUDE_PROJECT_DIR=/ ./plugins/vero-diff/scripts/snapshot.sh pre </dev/null
