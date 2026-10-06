@@ -292,19 +292,23 @@ A useful CI step is `claude plugin validate . --strict` on every push.
 - **Teams**: commit `extraKnownMarketplaces` and `enabledPlugins` to a repo's
   `.claude/settings.json`, and everyone who trusts that folder gets VeroDiff with no
   separate prompt.
-- **Wider audience**: submit to Anthropic's community marketplace, `claude-community`,
-  using the form at
-  [platform.claude.com/plugins/submit](https://platform.claude.com/plugins/submit), or the
-  claude.ai form if you have a Team or Enterprise organization. Submissions get automated
-  safety screening and the same `claude plugin validate` check you run locally. Pull
-  requests opened against
-  [`anthropics/claude-plugins-community`](https://github.com/anthropics/claude-plugins-community)
-  are closed automatically - everything goes through the form. Once approved, your plugin
-  is pinned to a commit SHA in that catalog and their CI moves the pin forward as you
-  push; the public catalog syncs nightly, so expect a delay before it is installable.
-  The curated `claude-plugins-official` marketplace is a separate thing: Anthropic decides
-  what goes in it, there is no application process, and the forms above do not submit to
-  it.
+- **Wider audience**: submit VeroDiff to
+  [Anthropic's directory](https://claude.ai/directory), the catalog people browse on
+  claude.ai and in Cowork. One listing reaches claude.ai, Cowork and Claude Code, where
+  it loads through account sync as `vero-diff@synced`. Submit from the developer portal
+  at [claude.ai/directory/manage](https://claude.ai/directory/manage), following
+  [Submit a plugin](https://claude.com/docs/plugins/submit#submit-a-plugin). It needs a
+  paid claude.ai plan: on Pro and Max you submit from your own account, on Team and
+  Enterprise an Owner does (or, on Enterprise, a member the Owner gave the **Directory**
+  permission). The portal applies rules of its own on top of `claude plugin validate`,
+  so run the
+  [pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist#run-the-checks-before-you-submit)
+  first. VeroDiff is a Claude Code mod, so say in the listing that it works in Claude
+  Code only - the terminal and the desktop app's Code tab - and check the
+  [component support table](https://claude.com/docs/plugins/platform-support#compare-component-support-by-app)
+  for what claude.ai and Cowork load. The official `claude-plugins-official`
+  marketplace takes no submissions through the portal; Anthropic decides what goes in
+  it, through its partner contacts.
 - **No git on the user's machine**: publish a zip and list it with an `archive` source
   plus a `sha256` pin.
 
