@@ -261,6 +261,11 @@ any of that come back.
 
 **Shell and portability**
 
+- **No quote in a comment inside a multi-line `$( )`.** bash 3.2 finds the closing `)`
+  without skipping comments, so `# the submodule's index` there opened a string and the
+  whole of `snapshot.sh` failed to parse on macOS - every snapshot lost - while bash 5 and
+  ShellCheck saw nothing. 1.1.2 shipped it. Put such code in a function. To check on
+  Linux: `docker run --rm -v "$PWD":/r:ro bash:3.2 bash -n /r/plugins/vero-diff/scripts/snapshot.sh`.
 - **git 2.22 is the floor.** `LOG_FORMAT`'s `%(trailers:key=...,valueonly,separator=...)`
   arrived then; an older git prints the placeholder as text and every step would name a
   "submodule". The README's Requirements says so.

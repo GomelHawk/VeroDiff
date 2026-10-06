@@ -169,21 +169,26 @@ tree="$(git write-tree 2>/dev/null)" || exit 0
 # X are not shown". A project with no gitlinks pays one read of the index for this,
 # filtered by grep: a bash loop over every entry cost 0.3 s on 20,000 files. A path
 # holding a newline splits into lines here; no part of one is a submodule `cd` reaches.
+# The fingerprint of one nested repository, run in a subshell of its own (the parentheses)
+# so the shadow's GIT_* never reach it. GIT_OPTIONAL_LOCKS=0: read only, never refresh
+# its index. Kept a function, never written inline in a multi-line $( ): bash 3.2 reads a
+# quote inside a comment there as a real one, and the whole script stops parsing.
+fingerprint() (
+  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+  cd "$TOP/$1" 2>/dev/null || exit 0
+  export GIT_OPTIONAL_LOCKS=0
+  {
+    git diff HEAD --no-color --no-ext-diff --binary 2>/dev/null
+    git ls-files -o --exclude-standard -z 2>/dev/null \
+      | while IFS= read -r -d '' f; do printf '%s\n' "$f"; cksum < "$f" 2>/dev/null; done
+  } | cksum | tr ' ' '-'
+)
 CLEAN_PRINT="$(printf '' | cksum | tr ' ' '-')"
 substate=""
 while IFS= read -r entry; do
   path="${entry#*$'\t'}"
   case "$path" in *$'\t'*|*$'\n'*) continue ;; esac
-  print="$(
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
-    cd "$TOP/$path" 2>/dev/null || exit 0
-    export GIT_OPTIONAL_LOCKS=0           # read only: never refresh the submodule's index
-    {
-      git diff HEAD --no-color --no-ext-diff --binary 2>/dev/null
-      git ls-files -o --exclude-standard -z 2>/dev/null \
-        | while IFS= read -r -d '' f; do printf '%s\n' "$f"; cksum < "$f" 2>/dev/null; done
-    } | cksum | tr ' ' '-'
-  )"
+  print="$(fingerprint "$path")"
   [ -n "$print" ] && [ "$print" != "$CLEAN_PRINT" ] && substate="$substate$print $path"$'\n'
 done < <(git ls-files -s -z 2>/dev/null | tr '\0' '\n' | grep '^160000 ')
 unset GIT_INDEX_FILE GIT_WORK_TREE
