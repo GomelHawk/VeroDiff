@@ -1,6 +1,6 @@
 // Pure text work on git's output: no `$`, so the tests can drive it directly.
 
-import type { FileDiff, Step } from '../types'
+import type { FileDiff, Step, StepSummary } from '../types'
 
 export const MAX_HUNK_CHARS = 9000 // a Code element holds at most 10000
 
@@ -112,16 +112,16 @@ export function fenceFor(text: string): string {
 // path, or what an empty variable would leave. The caller also checks it is a bare repo.
 export const isShadowPath = (path: string) => /^\/[^\n]*[^/\n]\/[^/\n]+-[0-9a-f]+\.git$/.test(path)
 
-// The status line under the prompt: the newest step at a glance, for when the pane is
-// closed or narrow. `−` is U+2212, the minus sign, so it lines up with `+`.
-export function statusLine(step: Step | undefined, files: readonly FileDiff[]): string | undefined {
+// The band above the prompt: the newest step at a glance, for when the pane is closed or
+// narrow - `turn 3 · 2 files · +5 −1`, drawn with its own colours.
+export function stepSummary(step: Step | undefined, files: readonly FileDiff[]): StepSummary | undefined {
   if (!step) return undefined
-  const what = step.turn === undefined ? 'edits outside a turn' : `turn ${step.turn}`
-  const adds = files.reduce((sum, file) => sum + file.adds, 0)
-  const dels = files.reduce((sum, file) => sum + file.dels, 0)
-  const count = files.length === 1 ? '1 file' : `${files.length} files`
-
-  return `VeroDiff: ${what} · ${count} · +${adds} \u2212${dels}`
+  return {
+    what: step.turn === undefined ? 'edits outside a turn' : `turn ${step.turn}`,
+    count: files.length === 1 ? '1 file' : `${files.length} files`,
+    adds: files.reduce((sum, file) => sum + file.adds, 0),
+    dels: files.reduce((sum, file) => sum + file.dels, 0),
+  }
 }
 
 // A prompt as a step's title: one line, at most `limit` characters - characters, not
@@ -130,4 +130,25 @@ export function statusLine(step: Step | undefined, files: readonly FileDiff[]): 
 export function promptLabel(text: string, limit = 100): string {
   const line = text.replace(/[\r\n\t]+/g, ' ').trim()
   return [...line].slice(0, limit).join('')
+}
+
+// The highlighter language for a file, named outright rather than left to `path`. It was
+// added to find out why the desktop app drew diffs with no syntax colours: it did not
+// help - the desktop colours a diff by added and removed lines only, while the terminal
+// highlights its tokens either way. Kept, as harmless and explicit. Unknown extensions
+// name nothing, and `path` still has its say.
+const LANGUAGES: Record<string, string> = {
+  ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
+  js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+  json: 'json', md: 'markdown', sh: 'bash', bash: 'bash', zsh: 'bash',
+  py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin',
+  cs: 'csharp', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp', swift: 'swift',
+  php: 'php', css: 'css', scss: 'scss', html: 'html', xml: 'xml', sql: 'sql',
+  yml: 'yaml', yaml: 'yaml', toml: 'toml',
+}
+
+export function languageOf(path: string): string | undefined {
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  const dot = name.lastIndexOf('.')
+  return dot > 0 ? LANGUAGES[name.slice(dot + 1)] : undefined
 }

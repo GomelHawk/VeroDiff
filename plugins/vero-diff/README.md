@@ -93,6 +93,7 @@ project - see [Where snapshots live](#where-snapshots-live).
 | `/vero-diff` | Opens the pane: this session's steps, newest first, each with its full diff |
 | `/vero-diff last` | Prints the latest turn's summary and its full diff into the chat |
 | `/vero-diff last 2` | Same, for step 2 - the steps are numbered as the pane numbers them |
+| `/vero-diff band` | Brings back the row above the prompt after you closed it |
 | `/vero-diff purge` | Deletes this project's snapshot history, every session's |
 
 The pane is a native part of Claude Code: a sidebar beside the transcript in the terminal,
@@ -107,9 +108,11 @@ one line, and the file gets a `✓` in the list, so after an interruption you se
 glance which files are left. Folds belong to the step on screen only - showing another
 step, or a new turn arriving, means you are done with this one, and they are cleared.
 
-The newest step also sits in the status line under the prompt -
-`VeroDiff: turn 3 · 2 files · +5 −1` - so you see what the last turn did even with the
-pane closed.
+The newest step also sits in one row above the prompt -
+`VeroDiff turn 3 · 2 files · +5 −1` - so you see what the last turn did even with the
+pane closed. While the pane is closed, that row also has **Show diff**, which opens it
+again. Its **×** closes the row itself, leaving nothing behind, in this and later
+sessions; `/vero-diff band` brings it back.
 
 Steps are described the way you would describe them out loud:
 
@@ -136,7 +139,8 @@ to any prompt. A turn that changed nothing is no step at all.
 The keys work once the pane has the focus: click it, or press `Ctrl+x` then `Tab`. Scroll
 a long diff with the mouse wheel. When a turn ends, the pane moves to it by itself.
 
-A closed pane stays closed, in every later session too, until you run `/vero-diff` again.
+A closed pane stays closed, in every later session too, until you press **Show diff** above
+the prompt or run `/vero-diff` again.
 In the terminal the pane opens by itself only in a window at least 144 columns wide;
 `/vero-diff` opens it at any width.
 
@@ -216,10 +220,12 @@ clean up by hand.
 | `No changes in this session yet.` | No turn of this session has changed a file. Ask for an edit; the step appears when the turn ends. |
 | `/vero-diff` is not in the command list | Claude Code was not restarted after installing, or the plugin is disabled. Check `/plugin`. A dim `vero-diff: ...` line in the transcript names a module that failed to load. |
 | `Not a git repository.` | VeroDiff diffs a git working tree; there is nothing to snapshot outside one. The pane does not open by itself there. |
-| The pane does not open by itself | You closed it once, and that is remembered: run `/vero-diff`. In the terminal it also waits for a window at least 144 columns wide. |
+| The pane does not open by itself | You closed it once, and that is remembered: press **Show diff** above the prompt, or run `/vero-diff`. In the terminal it also waits for a window at least 144 columns wide. |
+| `VeroDiff: can't scroll here (...)` | Clicking a file name could not scroll the pane to that file. The text after the colon is the reason Claude Code gave; please report it with the surface name in the brackets. |
 | `n` / `p` do nothing | The keys belong to the pane once it has the focus: click it, or `Ctrl+x` then `Tab`. The buttons always work. |
 | A turn shows edits you did not ask for | Either you changed files yourself between turns - those appear as `edits outside a turn` - or a second session shares this working tree. See [Concurrent sessions](#concurrent-sessions). |
 | A turn you expected is missing | A turn that changed nothing records no step, by design. |
+| No syntax colours in the desktop app | The desktop app colours a diff by added and removed lines only; the terminal also highlights the code. That is Claude Code's drawing, not a setting. |
 | A step is cut short | One file's diff is cut to whole hunks of about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
 | Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. |
 

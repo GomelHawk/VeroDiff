@@ -12,6 +12,9 @@ export type Step = {
 // `dels` count the whole file's changed lines, even when `hunks` was cut.
 export type FileDiff = { path: string; hunks: string; isCut: boolean; adds: number; dels: number }
 
+// The newest step at a glance, as the band above the prompt draws it.
+export type StepSummary = { what: string; count: string; adds: number; dels: number }
+
 // What the pane draws. `shadow` is empty outside a git repository. `shownSha` is the
 // snapshot whose files are loaded; `collapsed` holds the paths folded on that step only,
 // and empties the moment another step is shown.
@@ -22,6 +25,12 @@ export type View = {
   shownSha: string
   files: FileDiff[]
   collapsed: string[]
+  // the newest step for the band, whichever step the pane shows; absent with no steps
+  latest?: StepSummary
+  // whether the pane is on screen, so the band offers to bring it back only when it is not
+  isPaneOpen: boolean
+  // whether the person closed the band; then it draws nothing until `/vero-diff band`
+  isBandHidden: boolean
   error: string
   isLoading: boolean
 }

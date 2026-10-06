@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.1 - 2026-10-06
+
+The newest step now has a row of its own above the prompt, and the pane is one click away.
+
+- **A summary row above the prompt** replaces 1.1.0's status line, which Claude Code drew
+  as a warning (`⚠`) with the plugin's name twice. The row reads
+  `VeroDiff turn 3 · 2 files · +5 −1`, in colour.
+- **Show diff** in that row brings the pane back after you closed it - no need to type
+  `/vero-diff`.
+- **The row can go away completely**: its **×** removes it, in this and later sessions,
+  and `/vero-diff band` brings it back.
+- **Clicking a file name in the desktop app jumps to that file**, as it already did in
+  the terminal. If a jump is ever refused, the pane now says why in a short message
+  instead of doing nothing.
+
 ## 1.1.0 - 2026-10-06
 
 Find your way around a turn faster, and let Claude read its own diffs.

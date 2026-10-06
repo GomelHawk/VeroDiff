@@ -30,14 +30,22 @@ const ok = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
-// Everything beneath the plugin that a session would answer, from memory.
-function fakeWorld(on: On) {
-  mock.store(on)
+// Everything beneath the plugin that a session would answer, from memory. Returns what
+// the plugin asked of the world: the panes it opened and the toasts it showed.
+function fakeWorld(on: On, store: Record<string, unknown> = {}) {
+  const seen = { opened: [] as string[], toasts: [] as string[] }
+  mock.store(on, store)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__vero-diff__${e.name}` } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.status', () => ({ value: undefined }))
+  on('ui.open', ($, e) => {
+    seen.opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.toast', ($, e) => {
+    seen.toasts.push(e.text)
+    return { value: undefined }
+  })
   on('session.id', () => ({ value: 'S1' }))
   on('session.root', () => ({ value: '/repo' }))
   on('process.run', ($, e) => {
@@ -47,7 +55,17 @@ function fakeWorld(on: On) {
     if (e.argv[1] === 'diff') return ok(DIFFS[e.argv[e.argv.length - 1] ?? ''] ?? '')
     return ok('')
   })
+  return seen
 }
+
+const BAND = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 3,
+  bodyColumns: 80,
+  scroll: { offset: 0, bodyRows: 3 },
+  view: {},
+} as const
 
 const PROPS = {
   title: 'VeroDiff',
@@ -69,6 +87,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(await ui.find({ key: 'goto:notes.md' })).toBeDefined()
       expect(await ui.find({ key: 'file:a.txt' })).toBeDefined()
       expect((await ui.findAll({ type: 'Code' })).length).toBe(2)
+      // the language goes by name, and the surface accepts it
+      expect((await ui.findAll({ type: 'Code' })).map(c => c.props.language)).toEqual([undefined, 'markdown'])
     })
 
     test('each file jumps from the list and back up to it', async ($, on) => {
@@ -139,6 +159,75 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
       await $.session.end({ reason: 'clear', sessionId: 'S1', resume: { id: 'S1' } })
       expect(await ui.find({ type: 'Text', text: 'No changes in this session yet.' })).toBeDefined()
+    })
+
+    test('a scroll that does not happen says why in a toast', async ($, on) => {
+      // the kit lays nothing out, so every scroll fails here: exactly the case to report
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'goto:notes.md' })
+      expect(seen.toasts.length).toBe(1)
+      expect(seen.toasts[0]?.startsWith(`VeroDiff: can't scroll here (${surface}): `)).toBe(true)
+    })
+
+    test('the band shows the newest step, and Show diff only while the pane is closed', async ($, on) => {
+      // closed in an earlier session, so it does not open by itself
+      const seen = fakeWorld(on, { isPaneHidden: true })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({
+        plugin: 'vero-diff',
+        surface,
+        component: 'AbovePrompt',
+        props: BAND,
+      })
+
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
+      expect(await band.find({ type: 'Text', text: '+3' })).toBeDefined() // +assist, +# Notes, +one
+      expect(await band.find({ type: 'Text', text: '\u22121' })).toBeDefined()
+      expect(seen.opened).toEqual([])
+      await band.press({ key: 'show-diff' })
+      expect(seen.opened).toEqual(['vero-diff'])
+      expect(await band.find({ key: 'show-diff' })).toBeUndefined()
+    })
+
+    // The desktop closes the pane with its own mark, which the kit cannot press; that close
+    // passes through the plugin's ui.close hook. Hide does not, hence this test.
+    if (surface === 'terminal') {
+      test('Hide brings Show diff to the band', async ($, on) => {
+        fakeWorld(on)
+        on('ui.close', () => ({ value: undefined }))
+        await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+        const pane = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+        const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+        expect(await band.find({ key: 'show-diff' })).toBeUndefined()
+
+        await pane.press({ key: 'hide' })
+        expect(await band.find({ key: 'show-diff' })).toBeDefined()
+      })
+    }
+
+    test('the band closes without a trace, and /vero-diff band brings it back', async ($, on) => {
+      const seen = fakeWorld(on)
+      // what the engine draws above the prompt when no plugin does: an empty row
+      on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: {}, children: [] }))
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      await band.press({ key: 'hide-band' })
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeUndefined()
+      expect(await band.find({ key: 'hide-band' })).toBeUndefined()
+
+      const shown = await $.command.run({
+        command: 'vero-diff',
+        args: 'band',
+        origin: { kind: 'composer' },
+        presentation: { isFullscreen: true, columns: 120 },
+      })
+      expect(shown.text?.startsWith('VeroDiff row above the prompt is back')).toBe(true)
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
+      expect(seen.toasts).toEqual([])
     })
 
     test('Hide is drawn on the terminal only', async ($, on) => {

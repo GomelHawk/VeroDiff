@@ -25,7 +25,7 @@ claude plugin test ./plugins/vero-diff
 ```
 
 It covers how steps are named and numbered (no internal `[pre]`/`[post]` marker may reach
-a user), how a diff is split and cut per file, the status line, which paths
+a user), how a diff is split and cut per file, the band above the prompt, which paths
 `/vero-diff purge` will delete, and the pane itself, drawn on both the terminal and the
 desktop surface: its navigation, the file list, Hide, and what `/clear` does to it.
 

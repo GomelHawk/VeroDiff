@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { fenceFor, fitHunks, isShadowPath, parseLog, promptLabel, splitFiles, statusLine } from '../hooks/steps'
+import { fenceFor, fitHunks, isShadowPath, languageOf, parseLog, promptLabel, splitFiles, stepSummary } from '../hooks/steps'
 
 // The log as `git log LOG_FORMAT` prints it, newest first: hash, parent, age, subject.
 const LOG = [
@@ -104,17 +104,17 @@ describe('fenceFor', () => {
   })
 })
 
-describe('statusLine', () => {
+describe('stepSummary', () => {
   test('sums the newest step\'s files', () => {
-    const files = splitFiles(DIFF)
     const [turn2] = parseLog(LOG)
-    expect(statusLine(turn2, files)).toBe('VeroDiff: turn 2 · 2 files · +1 \u22120')
+    expect(stepSummary(turn2, splitFiles(DIFF))).toEqual({ what: 'turn 2', count: '2 files', adds: 1, dels: 0 })
   })
 
-  test('names edits outside a turn and clears with no step', () => {
+  test('names edits outside a turn, and is nothing without a step', () => {
     const outside = parseLog(LOG)[1]
-    expect(statusLine(outside, splitFiles(DIFF).slice(0, 1))).toBe('VeroDiff: edits outside a turn · 1 file · +1 \u22120')
-    expect(statusLine(undefined, [])).toBe(undefined)
+    expect(stepSummary(outside, splitFiles(DIFF).slice(0, 1))?.what).toBe('edits outside a turn')
+    expect(stepSummary(outside, splitFiles(DIFF).slice(0, 1))?.count).toBe('1 file')
+    expect(stepSummary(undefined, [])).toBe(undefined)
   })
 })
 
@@ -129,6 +129,20 @@ describe('promptLabel', () => {
 
   test('folds a multi-line prompt onto one line', () => {
     expect(promptLabel('fix\n\nthe\tbug\r\n')).toBe('fix the bug')
+  })
+})
+
+describe('languageOf', () => {
+  test('names the language by extension, whatever the folder or case', () => {
+    expect(languageOf('plugins/vero-diff/hooks/register.tsx')).toBe('typescript')
+    expect(languageOf('tests/smoke.sh')).toBe('bash')
+    expect(languageOf('README.MD')).toBe('markdown')
+  })
+
+  test('names nothing it does not know, so path still decides', () => {
+    expect(languageOf('Makefile')).toBe(undefined)
+    expect(languageOf('.gitignore')).toBe(undefined)
+    expect(languageOf('notes.weird')).toBe(undefined)
   })
 })
 

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { View } from '../types'
-import { LOG_FORMAT, clean, fenceFor, isShadowPath, parseLog, promptLabel, splitFiles, statusLine } from './steps'
+import { LOG_FORMAT, clean, fenceFor, isShadowPath, languageOf, parseLog, promptLabel, splitFiles, stepSummary } from './steps'
 
 // VeroDiff: snapshot the working tree at both ends of a turn (scripts/snapshot.sh) and
 // draw the diff of each turn in a pane. Snapshots live in a bare repository outside the
@@ -14,6 +14,9 @@ const TOOL = 'turn_diff'
 // Whether the person closed the pane, kept across sessions: a closed pane stays closed
 // until the command opens it again.
 const HIDDEN_KEY = 'isPaneHidden'
+// Whether the person closed the band above the prompt, kept across sessions the same way;
+// `/vero-diff band` brings it back.
+const BAND_HIDDEN_KEY = 'isBandHidden'
 // When stale sessions were last pruned; pruning runs at most once a day.
 const PRUNED_AT_KEY = 'prunedAt'
 const PRUNE_EVERY_MS = 24 * 60 * 60 * 1000
@@ -32,6 +35,8 @@ const INITIAL: View = {
   shownSha: '',
   files: [],
   collapsed: [],
+  isPaneOpen: false,
+  isBandHidden: false,
   error: '',
   isLoading: true,
 }
@@ -65,10 +70,32 @@ async function snapshot($: EngineInterface, kind: 'pre' | 'post', prompt = '') {
   }
 }
 
-// The status line follows the newest step, whichever step the pane shows.
-async function showStatus($: EngineInterface) {
+// The band follows the newest step, whichever step the pane shows.
+async function rememberLatest($: EngineInterface) {
   const v = await read($, view)
-  if (v.index === 0) $.ui.status(statusLine(v.steps[0], v.files))
+  if (v.steps.length === 0) await update($, view, cur => ({ ...cur, latest: undefined }))
+  else if (v.index === 0) await update($, view, cur => ({ ...cur, latest: stepSummary(cur.steps[0], cur.files) }))
+}
+
+// Opens the pane and says so to the band. `asked`: the person did it (the command, the
+// band's button), so the pane may seat at any width and the "closed" memory is cleared.
+async function openPane($: EngineInterface, asked: boolean) {
+  if (asked) await $.store.set(HIDDEN_KEY, false)
+  const opened = await $.ui.open({ id: PANE, title: 'VeroDiff' })
+  if (opened.isPlaced) await update($, view, cur => ({ ...cur, isPaneOpen: true }))
+}
+
+// The plugin's own $.ui.close does not pass through its own ui.close hook, so the Hide
+// button records the close itself; the ui.close hook covers the person's close mark.
+async function closePane($: EngineInterface) {
+  await update($, view, cur => ({ ...cur, isPaneOpen: false }))
+  await $.store.set(HIDDEN_KEY, true)
+  await $.ui.close({ id: PANE })
+}
+
+async function setBandHidden($: EngineInterface, isHidden: boolean) {
+  await $.store.set(BAND_HIDDEN_KEY, isHidden)
+  await update($, view, cur => ({ ...cur, isBandHidden: isHidden }))
 }
 
 async function loadStep($: EngineInterface, index: number) {
@@ -112,8 +139,7 @@ async function reload($: EngineInterface, jumpToLatest: boolean) {
       error: '',
     }))
     await loadStep($, index)
-    if (steps.length === 0) $.ui.status(undefined)
-    else await showStatus($)
+    await rememberLatest($)
   } catch (err) {
     await update($, view, cur => ({ ...cur, isLoading: false, error: String(err) }))
   }
@@ -164,8 +190,7 @@ async function purge($: EngineInterface): Promise<string> {
   const size = await $.process.run(['du', '-sh', shadow])
   const rm = await $.process.run(['rm', '-rf', shadow])
   if (rm.exitCode !== 0) return `Could not delete ${shadow}: ${rm.stderr.trim()}`
-  await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', index: 0, error: '' }))
-  $.ui.status(undefined)
+  await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', latest: undefined, index: 0, error: '' }))
 
   return `Snapshots removed: ${shadow} (${size.stdout.split('\t')[0] || 'size unknown'}).`
 }
@@ -195,7 +220,7 @@ export const register: Register = on => {
     await $.command.register({
       name: COMMAND,
       description: 'VeroDiff: what changed on each turn (pane, last [N], purge)',
-      argumentHint: '[last [N] | purge]',
+      argumentHint: '[last [N] | band | purge]',
     })
     await $.tool.register({
       name: TOOL,
@@ -211,9 +236,9 @@ export const register: Register = on => {
     })
     await reload($, true)
     const isGitRepo = (await read($, view)).shadow !== ''
-    if (isGitRepo && (await $.store.get(HIDDEN_KEY)) !== true) {
-      void $.ui.open({ id: PANE, title: 'VeroDiff' })
-    }
+    const isBandHidden = (await $.store.get(BAND_HIDDEN_KEY)) === true
+    await update($, view, cur => ({ ...cur, isBandHidden }))
+    if (isGitRepo && (await $.store.get(HIDDEN_KEY)) !== true) void openPane($, false)
     if (isGitRepo) void pruneStale($)
 
     return next(e)
@@ -225,8 +250,7 @@ export const register: Register = on => {
     const done = await next(e)
     openTurnAt = undefined
     if (e.reason === 'clear') {
-      await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', index: 0, error: '' }))
-      $.ui.status(undefined)
+      await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', latest: undefined, index: 0, error: '' }))
     }
 
     return done
@@ -267,11 +291,16 @@ export const register: Register = on => {
     const [sub = '', arg = ''] = e.args.trim().split(/\s+/)
     if (sub === 'last') return { text: await lastDiff($, arg) }
     if (sub === 'purge') return { text: await purge($) }
-    if (sub !== '') return { text: `Unknown: ${sub}. Use /vero-diff, /vero-diff last [N] or /vero-diff purge.` }
+    if (sub === 'band') {
+      await setBandHidden($, false)
+      return { text: 'VeroDiff row above the prompt is back. Close it again with its \u00d7.' }
+    }
+    if (sub !== '') {
+      return { text: `Unknown: ${sub}. Use /vero-diff, /vero-diff last [N], /vero-diff band or /vero-diff purge.` }
+    }
 
-    await $.store.set(HIDDEN_KEY, false)
     await reload($, true)
-    await $.ui.open({ id: PANE, title: 'VeroDiff' })
+    await openPane($, true)
 
     return { text: 'VeroDiff pane opened.' }
   })
@@ -280,17 +309,49 @@ export const register: Register = on => {
   // is a reload or the session ending, not a choice.
   // A failure to remember must never keep the pane open, hence the catch.
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE && e.origin.kind !== 'unload') await $.store.set(HIDDEN_KEY, true)
+    if (e.id === PANE) {
+      await update($, view, cur => ({ ...cur, isPaneOpen: false }))
+      if (e.origin.kind !== 'unload') await $.store.set(HIDDEN_KEY, true)
+    }
 
     return next(e)
   }).catch(($, e, next) => next(e))
+
+  // One row above the prompt: the newest step, and while the pane is closed, a way back to
+  // it without typing the command. Out of the way of a survey; nothing with no steps; and
+  // once the person closes it with its ×, nothing at all - no row, no trace - until
+  // `/vero-diff band`.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const v = await read($, view)
+    const latest = v.latest
+    if (e.props.hasSurvey || v.isBandHidden || latest === undefined) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Text dimColor>VeroDiff</Text>
+        <Text>{latest.what}</Text>
+        <Text dimColor>· {latest.count} ·</Text>
+        <Text color="green">+{latest.adds}</Text>
+        <Text color="red">{'\u2212'}{latest.dels}</Text>
+        {!v.isPaneOpen && (
+          <Button key="show-diff" dimColor onPress={() => void openPane($, true)}>
+            Show diff
+          </Button>
+        )}
+        <Button key="hide-band" plain dimColor role="dismiss" onPress={() => void setBandHidden($, true)}>
+          {'\u00d7'}
+        </Button>
+      </Box>
+    )
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Code } = $.ui.resolve(e)
     const v = await read($, view)
     // The desktop draws its own close mark on the pane; the terminal needs a button.
     const hide = e.surface === 'terminal' && (
-      <Button key="hide" hotkey="h" role="dismiss" onPress={() => void $.ui.close({ id: PANE })}>
+      <Button key="hide" hotkey="h" role="dismiss" onPress={() => void closePane($)}>
         Hide
       </Button>
     )
@@ -309,10 +370,18 @@ export const register: Register = on => {
 
     const step = v.steps[v.index]
     if (!step) return <Text dimColor>Loading snapshots...</Text>
-    const go = (to: number) => () => void loadStep($, to).then(() => showStatus($))
+    const go = (to: number) => () => void loadStep($, to).then(() => rememberLatest($))
     const shown = v.files.slice(0, MAX_FILES)
+    // Scroll targets are Buttons (`fold:` heads each file, `goto:` heads the list): the
+    // desktop app scrolls only to an element it can act on, and refused a Box's key with
+    // "no element of its own is drawn under that key". A refusal still says why, as a toast.
     const scrollTo = (key: string) =>
-      $.ui.scroll({ to: { key }, in: PANE, block: 'start' }).catch(() => undefined)
+      $.ui
+        .scroll({ to: { key }, in: PANE, block: 'start' })
+        .then(done => {
+          if (done.deny) $.ui.toast(`VeroDiff: can't scroll here (${e.surface}): ${done.deny}`)
+        })
+        .catch((err: unknown) => $.ui.toast(`VeroDiff: can't scroll here (${e.surface}): ${String(err)}`))
     const jump = (key: string) => () => void scrollTo(key)
     const isFolded = (path: string) => v.collapsed.includes(path)
     const fold = (path: string) => () =>
@@ -323,7 +392,7 @@ export const register: Register = on => {
     // From the list, a folded file opens again before the pane scrolls to it.
     const open = (path: string) => () =>
       void update($, view, cur => ({ ...cur, collapsed: cur.collapsed.filter(p => p !== path) })).then(() =>
-        scrollTo(`file:${path}`),
+        scrollTo(`fold:${path}`),
       )
     // With more than one file the step opens with a list of them: each name jumps to
     // its diff, and each diff ends with a way back up to the list.
@@ -381,13 +450,13 @@ export const register: Register = on => {
             {!isFolded(file.path) && (
               <Box flexDirection="column">
                 {file.hunks ? (
-                  <Code source={file.hunks} format="diff" path={file.path} />
+                  <Code source={file.hunks} format="diff" path={file.path} language={languageOf(file.path)} />
                 ) : (
                   <Text dimColor>(binary or mode change)</Text>
                 )}
                 {file.isCut && <Text dimColor>... cut: too long for one view</Text>}
                 {hasSummary && (
-                  <Button key={`top:${file.path}`} plain dimColor onPress={jump('summary')}>
+                  <Button key={`top:${file.path}`} plain dimColor onPress={jump(`goto:${shown[0]?.path ?? ''}`)}>
                     {'↑ Files'}
                   </Button>
                 )}

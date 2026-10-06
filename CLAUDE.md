@@ -77,7 +77,7 @@ object.
 (`script()` in `register.tsx`) with `cwd` and `CLAUDE_PROJECT_DIR` set to
 `$.session.root()`: `pre` on `turn.start` (with the prompt, cut to 100 characters by
 `promptLabel()`), `post` on `turn.complete` of the main agent, then the pane reloads and
-the status line follows. `prune 30` runs from `session.start` in the background, at most
+the band above the prompt follows. `prune 30` runs from `session.start` in the background, at most
 once a day (`$.store` key `prunedAt`). There are no command hooks, so `/hooks` lists
 nothing for VeroDiff.
 
@@ -110,7 +110,15 @@ stays the same: by the owner's decision, showing any other step or a new turn la
 means the step was accepted, so `loadStep()` drops them; re-reading the same step
 (Refresh, `last`, the tool) keeps them. Nothing about folds is remembered beyond that.
 Whether the person closed the pane is `$.store` key
-`isPaneHidden`. The newest step is also `$.ui.status`, `statusLine()` in `steps.ts`.
+`isPaneHidden`.
+
+**The band.** One row above the prompt (`ui.render` on `AbovePrompt`): the newest step
+(`view.latest`, from `stepSummary()` in `steps.ts`, kept for step 1 whichever step the pane
+shows) and, while `view.isPaneOpen` is false, **Show diff**, which opens the pane as the
+command does. Its **×** (`hide-band`) removes it entirely - the hook returns `next(e)`, so
+no row is left - and `$.store` key `isBandHidden` keeps it gone across sessions until
+`/vero-diff band`. It steps aside for a survey and draws nothing with no steps. It
+replaced `$.ui.status` in 1.1.1 - see the gotcha below.
 
 **The command and the tool.** `/vero-diff` opens the pane, `/vero-diff last [N]` answers
 `command.run` with `{ text }` - markdown the model reads too - and `/vero-diff purge`
@@ -195,6 +203,23 @@ any of that come back.
   cuts (`promptLabel()`); `snapshot.sh` never shortens the label.
 - **A diff of a markdown file contains fences of its own.** `/vero-diff last` wraps the
   diff in a fence one backtick longer than the longest run inside it (`fenceFor()`).
+- **The desktop app draws a diff without syntax highlighting.** `<Code format="diff">`
+  gets token colours in the terminal, but the desktop colours only the added and removed
+  lines - with `path`, and with `language` named outright (`languageOf()`) alike, which
+  was tried and changed nothing. Nothing in the plugin can fix it; the README says so.
+- **Do not use `$.ui.status` for good news.** The engine draws a plugin's status as a
+  pinned notice: a `⚠` and the plugin's name in front of the text, neither of which the
+  call can turn off. A summary there read as a warning, with the name twice
+  (`⚠ vero-diff: VeroDiff: turn 1 ...`). The band draws its own row instead.
+- **The desktop scrolls only to a Button's key, not a Box's.** `$.ui.scroll({ to: { key } })`
+  at a keyed `Box` worked in the terminal and was refused in the desktop app with
+  "no element of its own is drawn under that key" - and it says so only in `{ deny }`,
+  which 1.1.0 swallowed. Jumps now aim at Buttons (`fold:<path>` heads each file,
+  `goto:<first path>` heads the list), and a refusal is toasted with the surface.
+- **The plugin's own `$.ui.close` skips its own `ui.close` hook.** Only a close by the
+  person (the desktop's mark) or an unload passes through it, so the terminal's Hide
+  left `isPaneOpen` true and Show diff never appeared. `closePane()` records the close
+  itself before closing; the hook stays for the person's close.
 - **A pane opened unasked waits for 144 terminal columns.** `/vero-diff` (asked) places it
   at any width. On a surface where it cannot dock, `$.ui.open` says `isPlaced: false`.
 - **`$.store` is per plugin, not per project**, so hiding the pane hides it everywhere.
