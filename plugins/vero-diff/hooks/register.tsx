@@ -254,19 +254,22 @@ export const register: Register = on => {
     openTurnAt = undefined
     await $.command.register({
       name: COMMAND,
-      description: 'VeroDiff: what changed on each turn (pane, last [N], purge)',
+      description: 'VeroDiff: what changed on each turn (pane, last [N], band, purge)',
       argumentHint: '[last [N] | band | purge]',
     })
     await $.tool.register({
       name: TOOL,
       description:
         'Shows what changed on disk during one step of this session, as recorded by VeroDiff: ' +
-        'a summary and the full git diff between the turn\'s start and its end. ' +
-        'Step 1 is the newest step, 2 the one before it, and so on. ' +
-        'Use it to check exactly what an earlier turn changed.',
+        'a heading, a diffstat and the git diff. A step is usually one finished turn, from its start ' +
+        'to its end; a step titled "edits outside a turn" holds changes made between two turns, ' +
+        'typically by the person. Steps are this session\'s only, numbered newest first. ' +
+        'Use it to check exactly what an earlier turn changed. Changes inside a submodule are not ' +
+        'shown, edits by another session sharing this working tree cannot be told apart from this ' +
+        'one\'s, and a diff longer than 60,000 characters is cut short.',
       inputSchema: {
         type: 'object',
-        properties: { step: { type: 'integer', minimum: 1, description: '1 is the newest step' } },
+        properties: { step: { type: 'integer', minimum: 1, description: '1 is the newest step, 2 the one before it; omit for the newest' } },
       },
     })
     await reload($, true)
