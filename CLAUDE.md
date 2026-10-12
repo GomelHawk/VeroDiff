@@ -151,9 +151,16 @@ over the steps after it. Two presses, both through `snapshot.sh revert`: `check`
 path(s) into a throwaway index (filters and all, as a snapshot reads them) and compares
 with the step's tree, printing `ok` or `changed`; `apply` checks again, then
 `git checkout PARENT -- path`, or deletes a path the parent lacks; a rename passes both
-paths. A file edited since is `view.unrevertable`, never overwritten. `view.reverted`,
-`confirming`, `pages` and `unrevertable` clear with the folds. There is no Revert all,
-by the owner's decision.
+paths. A file edited since is `view.unrevertable`, never overwritten. A failed `check`
+prints `changed` and then the paths that differ, one per line.
+
+**Revert all files of this turn** (`revert-all`, then `revert-all-yes` / `revert-all-no`)
+sits after the last file once at least two files are left unreverted, and passes every one
+of them - past `MAX_FILES` too - to one `snapshot.sh revert`. By the owner's decision it is
+**all or nothing**: the script checks every path before writing any, and a refusal names
+the first edited file in `view.allNote` (a rename's source mapped back to its new name).
+Per-file Revert stays beside it. `view.reverted`, `confirming`, `isConfirmingAll`,
+`allNote`, `pages` and `unrevertable` clear with the folds.
 
 **Another session.** `reload()` reads every session's ref date (`git for-each-ref`);
 `otherSessionAt()` returns HH:MM when another session's newest snapshot is under 15
@@ -342,7 +349,7 @@ any of that come back.
 Three checks, all run by CI, none needing an account or the network:
 
 ```bash
-tests/smoke.sh                              # snapshot.sh: 78 assertions, git + bash only
+tests/smoke.sh                              # snapshot.sh: 82 assertions, git + bash only
 claude plugin test ./plugins/vero-diff      # steps.ts and the pane, against the engine
 
 claude plugin validate .                    # marketplace catalog

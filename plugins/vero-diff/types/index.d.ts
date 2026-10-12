@@ -32,9 +32,9 @@ export type FileDiff = {
 export type StepSummary = { what: string; count: string; adds: number; dels: number }
 
 // What the pane draws. `shadow` is empty outside a git repository. `shownSha` is the
-// snapshot whose files are loaded; `collapsed`, `pages`, `confirming`, `reverted` and
-// `unrevertable` hold what was done on that step only, and empty the moment another
-// step is shown.
+// snapshot whose files are loaded; `collapsed`, `pages`, `confirming`, `reverted`,
+// `unrevertable`, `isConfirmingAll` and `allNote` hold what was done on that step only,
+// and empty the moment another step is shown.
 export type View = {
   shadow: string
   steps: Step[]
@@ -50,6 +50,10 @@ export type View = {
   reverted: string[]
   // the paths found edited since the step, which Revert would overwrite
   unrevertable: string[]
+  // whether Revert all waits for Yes or No
+  isConfirmingAll: boolean
+  // what the last Revert all did: all reverted, or which file stopped it; '' for nothing
+  allNote: string
   // whether a main turn is running: Revert waits for it to end
   isTurnOpen: boolean
   // when another session last changed this working tree, as HH:MM; '' when none lately

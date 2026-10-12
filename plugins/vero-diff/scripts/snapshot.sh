@@ -9,7 +9,8 @@
 #   snapshot.sh prune DAYS   drop sessions whose newest snapshot is older than DAYS
 #   snapshot.sh revert check|apply SHA PARENT PATH [OLD_PATH]
 #                            put one file back as it was in PARENT, provided it is still
-#                            as SHA left it; prints ok (check), reverted, changed or failed
+#                            as SHA left it; prints ok (check), reverted, failed, or
+#                            changed and then the paths edited since, one per line
 #
 # Input comes from the environment, so no JSON parser is needed:
 #   VERODIFF_SESSION_ID   the session's id (its ref, index and label are its own)
@@ -169,9 +170,17 @@ if [ "$KIND" = "revert" ]; then
   [ ${#present[@]} -eq 0 ] ||
     git ${filters[@]+"${filters[@]}"} add -A --ignore-errors -- "${present[@]}" >/dev/null 2>&1
   now="$(git write-tree 2>/dev/null)"
-  if [ -z "$now" ] || [ "$(git ls-tree "$now" -- "${paths[@]}" 2>/dev/null)" != \
-                         "$(git ls-tree "$sha" -- "${paths[@]}" 2>/dev/null)" ]; then
-    rm -f "$GIT_INDEX_FILE"; echo changed; exit 0
+  # On a mismatch, `changed` and then each path that differs, one per line: an entry
+  # (mode, hash, path) on one side only.
+  on_disk="$(git -c core.quotePath=false ls-tree "$now" -- "${paths[@]}" 2>/dev/null)"
+  recorded="$(git -c core.quotePath=false ls-tree "$sha" -- "${paths[@]}" 2>/dev/null)"
+  if [ -z "$now" ] || [ "$on_disk" != "$recorded" ]; then
+    rm -f "$GIT_INDEX_FILE"
+    echo changed
+    LC_ALL=C comm -3 <(printf '%s\n' "$on_disk" | sed '/^$/d' | LC_ALL=C sort) \
+                     <(printf '%s\n' "$recorded" | sed '/^$/d' | LC_ALL=C sort) \
+      | sed 's/^\t//' | cut -f2- | LC_ALL=C sort -u
+    exit 0
   fi
   if [ "$mode" = "check" ]; then rm -f "$GIT_INDEX_FILE"; echo ok; exit 0; fi
   result=reverted

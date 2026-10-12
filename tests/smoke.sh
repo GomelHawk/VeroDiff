@@ -366,8 +366,20 @@ is "a rename is reverted"                          "$(rrevert apply "$sha" "$par
 is "a path with glob characters is taken literally" "$(rrevert apply "$sha" "$par" 'odd [name]*.txt')" "reverted"
 is "  ...and put back"                             "$(cat 'odd [name]*.txt')" "x"
 printf 'three\nmine\n' >> a.txt
-is "a file edited since the step is refused"       "$(rrevert apply "$sha" "$par" a.txt)" "changed"
+is "a file edited since the step is refused, by name" "$(rrevert apply "$sha" "$par" a.txt)" "$(printf 'changed\na.txt')"
 is "  ...and left as it is"                        "$(tail -1 a.txt)" "mine"
+rsnap pre "edit two files"
+printf 'b\n' > b.txt; printf 'c\n' > c.txt
+rsnap post
+sha2="$(GIT_DIR="$RSHADOW" git rev-parse refs/verodiff/session/rev)"
+par2="$(GIT_DIR="$RSHADOW" git rev-parse "$sha2^")"
+printf 'mine\n' >> c.txt
+is "several files: all or nothing, naming the one edited" \
+   "$(rrevert apply "$sha2" "$par2" b.txt c.txt)" "$(printf 'changed\nc.txt')"
+[ -e b.txt ] && ok "  ...and the other is not touched" || no "  ...and the other is not touched"
+rm -f c.txt; printf 'c\n' > c.txt
+is "several files at once"                         "$(rrevert apply "$sha2" "$par2" b.txt c.txt)" "reverted"
+[ ! -e b.txt ] && [ ! -e c.txt ] && ok "  ...every one of them" || no "  ...every one of them"
 is "a path outside the project is refused"         "$(rrevert apply "$sha" "$par" ../escape)" "failed"
 is "a malformed hash is refused"                   "$(rrevert apply "x$sha" "$par" a.txt)" "failed"
 hasnt "no temporary index is left behind"          "$(ls "$RSHADOW")" "index-revert"

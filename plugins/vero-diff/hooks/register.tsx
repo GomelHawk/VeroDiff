@@ -55,6 +55,8 @@ const INITIAL: View = {
   confirming: '',
   reverted: [],
   unrevertable: [],
+  isConfirmingAll: false,
+  allNote: '',
   isTurnOpen: false,
   otherSession: '',
   isPaneOpen: false,
@@ -144,7 +146,18 @@ async function filesOf($: EngineInterface, shadow: string, step: Step): Promise<
 function showing(cur: View, index: number, step: Step | undefined, files: FileDiff[]): Partial<View> {
   const sha = step?.sha ?? ''
   if (sha !== '' && cur.shownSha === sha) return { index, shownSha: sha, files }
-  return { index, shownSha: sha, files, collapsed: [], pages: {}, confirming: '', reverted: [], unrevertable: [] }
+  return {
+    index,
+    shownSha: sha,
+    files,
+    collapsed: [],
+    pages: {},
+    confirming: '',
+    reverted: [],
+    unrevertable: [],
+    isConfirmingAll: false,
+    allNote: '',
+  }
 }
 
 async function loadStep($: EngineInterface, index: number) {
@@ -189,35 +202,48 @@ async function reload($: EngineInterface, jumpToLatest: boolean) {
   }
 }
 
-// Revert puts one file of the newest step back as it was before the step, in two
-// presses: the first checks the file is still as the step left it and asks Yes or No,
+// Revert puts files of the newest step back as they were before the step, in two
+// presses: the first checks they are still as the step left them and asks Yes or No,
 // the second (Yes) checks again and writes. Only the newest step, and never while a turn
 // runs: an older step's file may have been changed by the steps after it, and a running
 // turn may be writing it. A file edited since is left alone and marked so. The revert is
 // an edit like any other: the next snapshot records it as edits outside a turn.
-async function revert($: EngineInterface, file: FileDiff, isConfirmed: boolean) {
+// `isAll`: every file of the step not reverted yet, all or nothing - if one of them was
+// edited since, none is touched, so a turn is never left half undone.
+async function revert($: EngineInterface, files: FileDiff[], isAll: boolean, isConfirmed: boolean) {
   const v = await read($, view)
   const step = v.steps[0]
-  if (v.index !== 0 || v.isTurnOpen || !step || step.sha !== v.shownSha) return
-  const paths = file.oldPath === undefined ? [file.path] : [file.path, file.oldPath]
-  const said = await script($, ['revert', isConfirmed ? 'apply' : 'check', step.sha, step.parent, ...paths]).then(
-    out => out.stdout.trim(),
-    () => 'failed',
+  if (v.index !== 0 || v.isTurnOpen || !step || step.sha !== v.shownSha || files.length === 0) return
+  const paths = files.flatMap(file => (file.oldPath === undefined ? [file.path] : [file.path, file.oldPath]))
+  const lines = await script($, ['revert', isConfirmed ? 'apply' : 'check', step.sha, step.parent, ...paths]).then(
+    out => out.stdout.split('\n').filter(Boolean),
+    () => ['failed'],
   )
+  const [said = 'failed', ...edited] = lines
+  const names = files.map(file => file.path)
+  const idle = { confirming: '', isConfirmingAll: false }
   if (said === 'ok') {
-    await update($, view, cur => ({ ...cur, confirming: file.path }))
+    await update($, view, cur => ({ ...cur, ...idle, allNote: '', ...(isAll ? { isConfirmingAll: true } : { confirming: names[0] ?? '' }) }))
   } else if (said === 'reverted') {
     await update($, view, cur => ({
       ...cur,
-      confirming: '',
-      reverted: [...cur.reverted, file.path],
-      collapsed: cur.collapsed.includes(file.path) ? cur.collapsed : [...cur.collapsed, file.path],
+      ...idle,
+      allNote: isAll ? `\u21ba All files of this ${step.turn === undefined ? 'step' : 'turn'} reverted` : cur.allNote,
+      reverted: [...cur.reverted, ...names.filter(path => !cur.reverted.includes(path))],
+      collapsed: [...cur.collapsed, ...names.filter(path => !cur.collapsed.includes(path))],
     }))
+  } else if (said === 'changed' && isAll) {
+    // a rename's source names the file it became
+    const named = edited.map(path => files.find(file => file.oldPath === path)?.path ?? path)
+    const first = named[0] ?? 'a file'
+    const more = named.length > 1 ? ` and ${named.length - 1} more` : ''
+    const since = step.turn === undefined ? 'this step' : 'this turn'
+    await update($, view, cur => ({ ...cur, ...idle, allNote: `Not reverted: ${first}${more} changed since ${since}.` }))
   } else if (said === 'changed') {
-    await update($, view, cur => ({ ...cur, confirming: '', unrevertable: [...cur.unrevertable, file.path] }))
+    await update($, view, cur => ({ ...cur, ...idle, unrevertable: [...cur.unrevertable, ...names] }))
   } else {
-    await update($, view, cur => ({ ...cur, confirming: '' }))
-    $.ui.toast(`VeroDiff: could not revert ${file.path}.`)
+    await update($, view, cur => ({ ...cur, ...idle }))
+    $.ui.toast(isAll ? 'VeroDiff: could not revert the files.' : `VeroDiff: could not revert ${names[0] ?? 'the file'}.`)
   }
 }
 
@@ -357,7 +383,7 @@ export const register: Register = on => {
     const isInsideOpenTurn = openTurnAt !== undefined && Date.now() - openTurnAt < STALE_TURN_MS
     if (!isInsideOpenTurn) {
       openTurnAt = Date.now()
-      await update($, view, cur => ({ ...cur, isTurnOpen: true, confirming: '' }))
+      await update($, view, cur => ({ ...cur, isTurnOpen: true, confirming: '', isConfirmingAll: false }))
       await snapshot($, 'pre', e.text)
     }
 
@@ -502,6 +528,36 @@ export const register: Register = on => {
     // Revert is offered on the newest step only, and not while a turn runs.
     const canRevert = v.index === 0 && !v.isTurnOpen
     const before = step.turn === undefined ? 'this step' : 'this turn'
+    // After the last file: every file of the step not reverted yet, every one of them,
+    // drawn or past MAX_FILES. Offered once at least two are left; one has its own button.
+    const left = v.files.filter(file => !v.reverted.includes(file.path))
+    const revertAll = () => {
+      if (v.isConfirmingAll) {
+        return (
+          <Box flexDirection="row" gap={1}>
+            <Text>
+              Revert {left.length} files to before {before}?
+            </Text>
+            <Button key="revert-all-yes" onPress={() => void revert($, left, true, true)}>
+              Yes
+            </Button>
+            <Button key="revert-all-no" onPress={() => void update($, view, cur => ({ ...cur, isConfirmingAll: false }))}>
+              No
+            </Button>
+          </Box>
+        )
+      }
+      return (
+        <Box flexDirection="column">
+          {v.allNote !== '' && <Text dimColor>{v.allNote}</Text>}
+          {left.length > 1 && (
+            <Button key="revert-all" onPress={() => void revert($, left, true, false)}>
+              Revert all files of {before}
+            </Button>
+          )}
+        </Box>
+      )
+    }
     const revertControl = (file: FileDiff) => {
       if (v.reverted.includes(file.path)) return <Text dimColor>{'\u21ba'} reverted</Text>
       if (v.unrevertable.includes(file.path)) return <Text dimColor>changed since - not reverted</Text>
@@ -509,7 +565,7 @@ export const register: Register = on => {
         return (
           <Box flexDirection="row" gap={1}>
             <Text>Revert to before {before}?</Text>
-            <Button key={`revert-yes:${file.path}`} onPress={() => void revert($, file, true)}>
+            <Button key={`revert-yes:${file.path}`} onPress={() => void revert($, [file], false, true)}>
               Yes
             </Button>
             <Button key={`revert-no:${file.path}`} onPress={() => void update($, view, cur => ({ ...cur, confirming: '' }))}>
@@ -519,7 +575,7 @@ export const register: Register = on => {
         )
       }
       return (
-        <Button key={`revert:${file.path}`} onPress={() => void revert($, file, false)}>
+        <Button key={`revert:${file.path}`} onPress={() => void revert($, [file], false, false)}>
           Revert
         </Button>
       )
@@ -621,6 +677,7 @@ export const register: Register = on => {
           )
         })}
         {v.files.length > MAX_FILES && <Text dimColor>+{v.files.length - MAX_FILES} more files</Text>}
+        {canRevert && revertAll()}
       </Box>
     )
   })

@@ -127,6 +127,12 @@ so a revert never throws an edit away. A file the step created is deleted, a ren
 gets its old name back. The revert is an edit like any other: the next turn records it as
 `edits outside a turn`.
 
+**Revert all files of this turn**, after the last file, does the same for every file of
+the step not reverted yet, after the same Yes / No. It is all or nothing: if even one of
+those files was edited since, none is touched, and the pane names the one that stopped it -
+`Not reverted: src/fetch.ts changed since this turn.` - so a turn is never left half
+undone. Revert that file on its own, or put it back first, and try again.
+
 **Ask about this** under each hunk adds where it is to your prompt -
 `About src/fetch.ts lines 10–29 (changed in turn 7): ` - for you to finish with a question.
 Nothing is sent until you press enter.

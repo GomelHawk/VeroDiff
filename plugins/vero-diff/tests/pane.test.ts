@@ -412,6 +412,48 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(seen.ran.some(argv => argv[3] === 'apply')).toBe(false)
     })
 
+    test('Revert all asks first, then reverts every file at once', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      expect((await ui.find({ key: 'revert-all' }))?.text).toBe('Revert all files of this turn')
+      await ui.press({ key: 'revert-all' })
+      expect(await ui.find({ type: 'Text', text: 'Revert 2 files to before this turn?' })).toBeDefined()
+      await ui.press({ key: 'revert-all-yes' })
+      const applied = seen.ran.filter(argv => argv[2] === 'revert' && argv[3] === 'apply')
+      expect(applied.map(argv => argv.slice(4))).toEqual([['c3', 'c2', 'a.txt', 'notes.md']])
+      expect(await ui.find({ type: 'Text', text: '\u21ba All files of this turn reverted' })).toBeDefined()
+      expect(await ui.find({ key: 'revert-all' })).toBeUndefined()
+      expect((await ui.findAll({ type: 'Text', text: '\u21ba reverted' })).length).toBe(2)
+      expect((await ui.findAll({ type: 'Code' })).length).toBe(0)
+    })
+
+    test('Revert all is all or nothing: one file edited since stops it, by name', async ($, on) => {
+      const seen = fakeWorld(on, {}, { revert: { check: 'changed\nnotes.md', apply: 'changed\nnotes.md' } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'revert-all' })
+      expect(await ui.find({ type: 'Text', text: 'Not reverted: notes.md changed since this turn.' })).toBeDefined()
+      expect(await ui.find({ key: 'revert-all-yes' })).toBeUndefined()
+      expect(seen.ran.some(argv => argv[3] === 'apply')).toBe(false)
+      // the file that was not edited can still be reverted on its own
+      expect(await ui.find({ key: 'revert:a.txt' })).toBeDefined()
+    })
+
+    test('Revert all skips files already reverted, and leaves when one is left', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'revert:a.txt' })
+      await ui.press({ key: 'revert-yes:a.txt' })
+      // one file left: its own Revert is enough
+      expect(await ui.find({ key: 'revert-all' })).toBeUndefined()
+      expect(seen.ran.filter(argv => argv[3] === 'apply').map(argv => argv.slice(6))).toEqual([['a.txt']])
+    })
+
     test('Revert is offered on the newest step only', async ($, on) => {
       fakeWorld(on)
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
@@ -419,8 +461,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
       await ui.press({ key: 'older' })
       expect(await ui.find({ key: 'revert:a.txt' })).toBeUndefined()
+      expect(await ui.find({ key: 'revert-all' })).toBeUndefined()
       await ui.press({ key: 'latest' })
       expect(await ui.find({ key: 'revert:a.txt' })).toBeDefined()
+      expect(await ui.find({ key: 'revert-all' })).toBeDefined()
     })
 
     test('Ask about this adds where the hunk is to the prompt, and sends nothing', async ($, on) => {
