@@ -334,6 +334,47 @@ cmp -s "$WORK/subgit.before" "$WORK/subgit.after" && ok "the submodule's own .gi
 rm -rf "$REPO/sub"
 
 echo
+echo "== reverting one file of the newest step =="
+
+REV="$WORK/revert"
+mkdir -p "$REV"; cd "$REV" || exit 1
+git init -q -b main
+git config user.email smoke@test; git config user.name smoke
+git config core.autocrlf input; git config gc.auto 0; git config core.commitGraph false
+printf 'one\ntwo\n' > a.txt; printf 'keep\n' > old.txt; printf 'x\n' > 'odd [name]*.txt'
+git add -A; git commit -qm init
+revobjects() { find "$REV/.git/objects" -type f | LC_ALL=C sort; }
+revobjects > "$WORK/rev.before"
+rsnap() { CLAUDE_PROJECT_DIR="$REV" VERODIFF_SESSION_ID=rev VERODIFF_PROMPT="${2:-}" "$SNAP" "$1" </dev/null; }
+rrevert() { CLAUDE_PROJECT_DIR="$REV" VERODIFF_SESSION_ID=rev "$SNAP" revert "$@" </dev/null; }
+rsnap pre "edit four files"
+printf 'three\n' >> a.txt; printf 'new\n' > created.txt; mv old.txt moved.txt; printf 'y\n' > 'odd [name]*.txt'
+rsnap post
+RSHADOW="$(CLAUDE_PROJECT_DIR="$REV" "$SNAP" where)"
+sha="$(GIT_DIR="$RSHADOW" git rev-parse refs/verodiff/session/rev)"
+par="$(GIT_DIR="$RSHADOW" git rev-parse "$sha^")"
+
+is "check says ok for a file as the step left it" "$(rrevert check "$sha" "$par" a.txt)" "ok"
+is "check writes nothing"                          "$(cat a.txt)" "$(printf 'one\ntwo\nthree')"
+is "an edited file is put back"                    "$(rrevert apply "$sha" "$par" a.txt)" "reverted"
+is "  ...to what it was before the step"           "$(cat a.txt)" "$(printf 'one\ntwo')"
+is "a created file is reverted"                    "$(rrevert apply "$sha" "$par" created.txt)" "reverted"
+[ -e created.txt ] && no "  ...by deleting it" || ok "  ...by deleting it"
+is "a rename is reverted"                          "$(rrevert apply "$sha" "$par" moved.txt old.txt)" "reverted"
+[ ! -e moved.txt ] && [ "$(cat old.txt 2>/dev/null)" = "keep" ] && ok "  ...to its old name" \
+  || no "  ...to its old name"
+is "a path with glob characters is taken literally" "$(rrevert apply "$sha" "$par" 'odd [name]*.txt')" "reverted"
+is "  ...and put back"                             "$(cat 'odd [name]*.txt')" "x"
+printf 'three\nmine\n' >> a.txt
+is "a file edited since the step is refused"       "$(rrevert apply "$sha" "$par" a.txt)" "changed"
+is "  ...and left as it is"                        "$(tail -1 a.txt)" "mine"
+is "a path outside the project is refused"         "$(rrevert apply "$sha" "$par" ../escape)" "failed"
+is "a malformed hash is refused"                   "$(rrevert apply "x$sha" "$par" a.txt)" "failed"
+hasnt "no temporary index is left behind"          "$(ls "$RSHADOW")" "index-revert"
+revobjects > "$WORK/rev.after"
+is "reverting writes nothing to the project's .git" "$(LC_ALL=C comm -13 "$WORK/rev.before" "$WORK/rev.after")" ""
+
+echo
 echo "== the hook never fails a turn =="
 
 cd "$WORK" || exit 1

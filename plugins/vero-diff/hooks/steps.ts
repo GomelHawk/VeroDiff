@@ -1,8 +1,11 @@
 // Pure text work on git's output: no `$`, so the tests can drive it directly.
 
-import type { FileDiff, Step, StepSummary } from '../types'
+import type { FileDiff, Hunk, Step, StepSummary } from '../types'
 
 export const MAX_HUNK_CHARS = 9000 // a Code element holds at most 10000
+// What one file keeps of its diff, over every press of Show more. Past it, the pane says
+// the rest is too long to show; `/vero-diff last` and git have it all.
+export const MAX_FILE_CHARS = 200000
 
 // The format `parseLog` reads, one snapshot per line, newest first: hash, parents, age,
 // the submodules whose uncommitted work changed (snapshot.sh's `submodule-changed`
@@ -61,7 +64,8 @@ export function parseLog(log: string, turnsBefore = 0): Step[] {
 // Code accepts tab and newline as its only control characters.
 export const clean = (s: string) => s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
 
-// A step's `git diff`, one entry per file, cut to what one Code element can hold.
+// A step's `git diff`, one entry per file, its hunks apart: each is drawn in a Code
+// element of its own, which holds at most 10,000 characters.
 export function splitFiles(diff: string): FileDiff[] {
   return diff
     .split(/^(?=diff --git )/m)
@@ -69,19 +73,84 @@ export function splitFiles(diff: string): FileDiff[] {
     .map(chunk => {
       const path = pathOf(chunk)
       const at = chunk.indexOf('\n@@')
-      let hunks = at < 0 ? '' : clean(chunk.slice(at + 1)).replace(/\n$/, '')
+      const head = (at < 0 ? chunk : chunk.slice(0, at)).split('\n')
+      const text = at < 0 ? '' : clean(chunk.slice(at + 1)).replace(/\n$/, '')
       // Counted before any cut, from the hunks alone: the `---`/`+++` header lines
       // come before the first `@@`, so a deleted line that reads `--x` still counts.
       let adds = 0
       let dels = 0
-      for (const line of hunks.split('\n')) {
+      for (const line of text.split('\n')) {
         if (line.startsWith('+')) adds++
         else if (line.startsWith('-')) dels++
       }
-      const isCut = hunks.length > MAX_HUNK_CHARS
-      if (isCut) hunks = fitHunks(hunks, MAX_HUNK_CHARS)
-      return { path, hunks, isCut, adds, dels }
+      const hunks: Hunk[] = []
+      let size = 0
+      let isCut = false
+      for (const one of text === '' ? [] : text.split(/\n(?=@@ )/)) {
+        if (size + Math.min(one.length, MAX_HUNK_CHARS) > MAX_FILE_CHARS && hunks.length > 0) {
+          isCut = true
+          break
+        }
+        const hunk = hunkOf(one)
+        size += hunk.text.length
+        hunks.push(hunk)
+      }
+      const file: FileDiff = { path, hunks, isCut, adds, dels }
+      const renamed = head.find(line => line.startsWith('rename from '))
+      if (renamed !== undefined) file.oldPath = unquote(renamed.slice('rename from '.length))
+      if (head.some(line => line.startsWith('new file mode '))) file.status = 'added'
+      else if (head.some(line => line.startsWith('deleted file mode '))) file.status = 'deleted'
+      return file
     })
+}
+
+// One hunk, cut to fit a Code element if it must, with where it starts on either side.
+function hunkOf(text: string): Hunk {
+  const isCut = text.length > MAX_HUNK_CHARS
+  const kept = isCut ? fitHunks(text, MAX_HUNK_CHARS) : text
+  const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(kept)
+  return { text: kept, isCut, oldStart: Number(header?.[1] ?? 0), newStart: Number(header?.[2] ?? 0) }
+}
+
+// How many of a file's hunks the pane draws after `pages` presses of Show more: each
+// press adds about one Code element's worth, and there is always at least one hunk.
+export function shownHunks(hunks: readonly Hunk[], pages: number): number {
+  const budget = MAX_HUNK_CHARS * (pages + 1)
+  let size = 0
+  let count = 0
+  for (const hunk of hunks) {
+    if (count > 0 && size + hunk.text.length > budget) break
+    size += hunk.text.length
+    count++
+  }
+  return count
+}
+
+// What Ask about this puts in the prompt box: where the hunk is and which step made it,
+// never the hunk itself - the model can read the file or call turn_diff. Lines count in
+// the file as the step left it: from the first added line to the last, or, when the hunk
+// only removes, the line the removal sits before.
+export function askAbout(file: FileDiff, hunk: Hunk, step: Step): string {
+  const when = step.turn === undefined ? 'outside a turn' : `in turn ${step.turn}`
+  if (file.status === 'deleted') return `About ${file.path} (deleted ${when}): `
+  let line = hunk.newStart
+  let first = 0
+  let last = 0
+  let removedAt = 0
+  for (const row of hunk.text.split('\n').slice(1)) {
+    if (row.startsWith('+')) {
+      if (first === 0) first = line
+      last = line
+      line++
+    } else if (row.startsWith('-')) {
+      if (removedAt === 0) removedAt = line
+    } else if (!row.startsWith('\\')) {
+      line++
+    }
+  }
+  if (first === 0) return `About ${file.path} near line ${Math.max(removedAt, 1)} (lines removed ${when}): `
+  const lines = first === last ? `line ${first}` : `lines ${first}\u2013${last}`
+  return `About ${file.path} ${lines} (changed ${when}): `
 }
 
 // A file's path, from the lines git writes above its first hunk. Not from the
@@ -236,4 +305,23 @@ export function languageOf(path: string): string | undefined {
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   const dot = name.lastIndexOf('.')
   return dot > 0 ? LANGUAGES[name.slice(dot + 1)] : undefined
+}
+
+// When another session last changed this working tree, as HH:MM local time, read from
+// `git for-each-ref --format='%(committerdate:unix) %(refname)' refs/verodiff/session`:
+// the newest snapshot of any session but `sid` taken within `windowSec` of `nowSec`. A
+// snapshot is made only when the tree moved, so a recent one means recent edits - which
+// show up in this session's diffs too. '' when there is none.
+export function otherSessionAt(refs: string, sid: string, nowSec: number, windowSec = 15 * 60): string {
+  let newest = 0
+  for (const line of refs.split('\n')) {
+    const [when = '', ref = ''] = line.split(' ')
+    const at = Number(when)
+    if (ref === `refs/verodiff/session/${sid}` || !Number.isFinite(at)) continue
+    if (nowSec - at <= windowSec && at > newest) newest = at
+  }
+  if (newest === 0) return ''
+  const time = new Date(newest * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(time.getHours())}:${pad(time.getMinutes())}`
 }

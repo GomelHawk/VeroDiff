@@ -10,16 +10,31 @@ export type Step = {
   submodules?: string[]
 }
 
+// One hunk of a file's diff, `@@` header first. `isCut`: it was too long for one Code
+// element and keeps only what fits. `oldStart`/`newStart` are the header's line numbers.
+export type Hunk = { text: string; isCut: boolean; oldStart: number; newStart: number }
+
 // One file of a step's diff, hunks only: the path is drawn above them. `adds` and
-// `dels` count the whole file's changed lines, even when `hunks` was cut.
-export type FileDiff = { path: string; hunks: string; isCut: boolean; adds: number; dels: number }
+// `dels` count the whole file's changed lines, even when `hunks` was cut. `isCut`: the
+// file had more hunks than VeroDiff keeps. `oldPath` is the path before a rename;
+// `status` says the step created or deleted the file.
+export type FileDiff = {
+  path: string
+  oldPath?: string
+  status?: 'added' | 'deleted'
+  hunks: Hunk[]
+  isCut: boolean
+  adds: number
+  dels: number
+}
 
 // The newest step at a glance, as the band above the prompt draws it.
 export type StepSummary = { what: string; count: string; adds: number; dels: number }
 
 // What the pane draws. `shadow` is empty outside a git repository. `shownSha` is the
-// snapshot whose files are loaded; `collapsed` holds the paths folded on that step only,
-// and empties the moment another step is shown.
+// snapshot whose files are loaded; `collapsed`, `pages`, `confirming`, `reverted` and
+// `unrevertable` hold what was done on that step only, and empty the moment another
+// step is shown.
 export type View = {
   shadow: string
   steps: Step[]
@@ -27,6 +42,18 @@ export type View = {
   shownSha: string
   files: FileDiff[]
   collapsed: string[]
+  // presses of Show more, by path
+  pages: Record<string, number>
+  // the path whose Revert waits for Yes or No; '' for none
+  confirming: string
+  // the paths put back as they were before the step
+  reverted: string[]
+  // the paths found edited since the step, which Revert would overwrite
+  unrevertable: string[]
+  // whether a main turn is running: Revert waits for it to end
+  isTurnOpen: boolean
+  // when another session last changed this working tree, as HH:MM; '' when none lately
+  otherSession: string
   // the newest step for the band, whichever step the pane shows; absent with no steps
   latest?: StepSummary
   // whether the pane is on screen, so the band offers to bring it back only when it is not

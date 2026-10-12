@@ -56,7 +56,7 @@ verodiff/                                  marketplace repo root
     ├── types/index.d.ts                   $.state contract: PluginState['vero-diff']
     ├── tests/steps.test.ts                `claude plugin test`: steps.ts
     ├── tests/pane.test.ts                 `claude plugin test`: the pane, both surfaces
-    └── scripts/snapshot.sh                snapshot / where / prune; called by the module
+    └── scripts/snapshot.sh                snapshot / where / prune / revert; called by the module
 ```
 
 ## How it works
@@ -82,7 +82,8 @@ the only place the cache layout is computed; `snapshot.sh prune DAYS` drops sess
 newest snapshot is older than DAYS (never the asking session), and index or label files
 with no ref that are DAYS old themselves, and runs
 `git gc --prune=2.weeks.ago`, so a snapshot another session is writing cannot lose an
-object.
+object. `snapshot.sh revert check|apply SHA PARENT PATH [OLD_PATH]` serves the pane's
+Revert (see **The pane**).
 
 **Who calls it.** The hooks module, through `$.process.run(['bash', snapshot.sh, ...])`
 (`script()` in `register.tsx`) with `cwd` and `CLAUDE_PROJECT_DIR` set to
@@ -134,6 +135,30 @@ means the step was accepted, so `loadStep()` drops them; re-reading the same ste
 (Refresh, `last`, the tool) keeps them. Nothing about folds is remembered beyond that.
 Whether the person closed the pane is `$.store` key
 `isPaneHidden`.
+
+Each hunk is its own `<Code>` (`FileDiff.hunks` is a `Hunk[]`), so a file is drawn a page
+at a time: `shownHunks()` gives about one Code element's worth (`MAX_HUNK_CHARS`) per
+press of **Show more** (`more:<path>`, counted in `view.pages`); a hunk too long for one
+Code is cut by `fitHunks()`, and a file keeps at most `MAX_FILE_CHARS` (200,000). Under
+each hunk, **Ask about this** (`ask:<path>:<n>`) appends `askAbout()`'s text - path,
+lines of the added code, the turn - to the prompt box with `$.prompt.fill`; it never
+submits, and never pastes the hunk. Only a fill the box refused is toasted.
+
+**Revert** (`revert:<path>`, then `revert-yes:` / `revert-no:`) puts one file of the
+**newest step only** back to the step's parent, never while a turn runs
+(`view.isTurnOpen`) - by the owner's decision, so an older step can never be reverted
+over the steps after it. Two presses, both through `snapshot.sh revert`: `check` adds the
+path(s) into a throwaway index (filters and all, as a snapshot reads them) and compares
+with the step's tree, printing `ok` or `changed`; `apply` checks again, then
+`git checkout PARENT -- path`, or deletes a path the parent lacks; a rename passes both
+paths. A file edited since is `view.unrevertable`, never overwritten. `view.reverted`,
+`confirming`, `pages` and `unrevertable` clear with the folds. There is no Revert all,
+by the owner's decision.
+
+**Another session.** `reload()` reads every session's ref date (`git for-each-ref`);
+`otherSessionAt()` returns HH:MM when another session's newest snapshot is under 15
+minutes old, and the pane's header and the band warn. A snapshot is only made when the
+tree moved, so a recent one means recent edits.
 
 **The band.** One row above the prompt (`ui.render` on `AbovePrompt`): the newest step
 (`view.latest`, from `stepSummary()` in `steps.ts`, kept for step 1 whichever step the pane
@@ -302,6 +327,12 @@ any of that come back.
   whenever it feels like it, so the count legitimately *falls* mid-test. The invariant is
   that VeroDiff never **adds** an object: diff the sorted object lists and require the
   added set to be empty.
+- **A missing path fails the whole `git add`** ("pathspec did not match any files"), so
+  `revert`'s check adds only paths on disk - a rename's source, absent by then, would
+  otherwise make every rename look edited.
+- **`revert apply` writes with the project's `core.autocrlf`/`core.eol`**, read before
+  `GIT_DIR` moves to the shadow. The shadow sees only the global config, and a project
+  that sets `input` locally got CRLF files back on a machine whose global says `true`.
 - **`.gitattributes` pinning `eol=lf` is load-bearing, not tidiness.** `core.autocrlf=true`
   is the default on Windows installs of git, so a clone without it hands the user a
   `snapshot.sh` that dies with `/usr/bin/env: 'bash\r': No such file or directory`.
@@ -311,7 +342,7 @@ any of that come back.
 Three checks, all run by CI, none needing an account or the network:
 
 ```bash
-tests/smoke.sh                              # snapshot.sh: 62 assertions, git + bash only
+tests/smoke.sh                              # snapshot.sh: 78 assertions, git + bash only
 claude plugin test ./plugins/vero-diff      # steps.ts and the pane, against the engine
 
 claude plugin validate .                    # marketplace catalog

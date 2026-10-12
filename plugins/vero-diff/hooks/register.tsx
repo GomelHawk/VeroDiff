@@ -1,17 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { FileDiff, Step, View } from '../types'
+import type { FileDiff, Hunk, Step, View } from '../types'
 import {
   DIFF_OPTIONS,
   LOG_FORMAT,
+  askAbout,
   clean,
   fenceFor,
   isShadowPath,
   languageOf,
+  otherSessionAt,
   parentOfOldest,
   parseLog,
   promptLabel,
+  shownHunks,
   splitFiles,
   stepSummary,
   submoduleNote,
@@ -48,6 +51,12 @@ const INITIAL: View = {
   shownSha: '',
   files: [],
   collapsed: [],
+  pages: {},
+  confirming: '',
+  reverted: [],
+  unrevertable: [],
+  isTurnOpen: false,
+  otherSession: '',
   isPaneOpen: false,
   isBandHidden: false,
   error: '',
@@ -128,13 +137,14 @@ async function filesOf($: EngineInterface, shadow: string, step: Step): Promise<
   return splitFiles(out.stdout)
 }
 
-// The fields that show one step, as a single write. Folding is for reviewing the step on
-// screen. Showing another step - by Older, Newer, Latest, or a new turn landing - means
-// this one is accepted, so the folds go; the same step read again (Refresh, `last`, the
-// model's tool) keeps them.
+// The fields that show one step, as a single write. Folding, Show more and Revert are
+// for reviewing the step on screen. Showing another step - by Older, Newer, Latest, or a
+// new turn landing - means this one is accepted, so they go; the same step read again
+// (Refresh, `last`, the model's tool) keeps them.
 function showing(cur: View, index: number, step: Step | undefined, files: FileDiff[]): Partial<View> {
   const sha = step?.sha ?? ''
-  return { index, shownSha: sha, files, collapsed: sha !== '' && cur.shownSha === sha ? cur.collapsed : [] }
+  if (sha !== '' && cur.shownSha === sha) return { index, shownSha: sha, files }
+  return { index, shownSha: sha, files, collapsed: [], pages: {}, confirming: '', reverted: [], unrevertable: [] }
 }
 
 async function loadStep($: EngineInterface, index: number) {
@@ -164,16 +174,63 @@ async function reload($: EngineInterface, jumpToLatest: boolean) {
     const sid = await $.session.id()
     const log = await git($, shadow, ['log', `--max-count=${LIMIT}`, LOG_FORMAT, `refs/verodiff/session/${sid}`])
     const steps = log.exitCode === 0 ? parseLog(log.stdout, await turnsBefore($, shadow, log.stdout)) : []
+    const refs = await git($, shadow, ['for-each-ref', '--format=%(committerdate:unix) %(refname)', 'refs/verodiff/session'])
+    const otherSession = otherSessionAt(refs.exitCode === 0 ? refs.stdout : '', sid, Math.floor(Date.now() / 1000))
     const prev = await read($, view)
     const index = jumpToLatest ? 0 : Math.min(prev.index, Math.max(0, steps.length - 1))
     const step = steps[index]
     const files = step ? await filesOf($, shadow, step) : []
     // One write: the step list, which step is shown and its files arrive together, so the
     // pane never draws a new step's title over the old step's files in between.
-    await update($, view, cur => ({ ...cur, shadow, steps, ...showing(cur, index, step, files), isLoading: false, error: '' }))
+    await update($, view, cur => ({ ...cur, shadow, steps, otherSession, ...showing(cur, index, step, files), isLoading: false, error: '' }))
     await rememberLatest($)
   } catch (err) {
     await update($, view, cur => ({ ...cur, isLoading: false, error: String(err) }))
+  }
+}
+
+// Revert puts one file of the newest step back as it was before the step, in two
+// presses: the first checks the file is still as the step left it and asks Yes or No,
+// the second (Yes) checks again and writes. Only the newest step, and never while a turn
+// runs: an older step's file may have been changed by the steps after it, and a running
+// turn may be writing it. A file edited since is left alone and marked so. The revert is
+// an edit like any other: the next snapshot records it as edits outside a turn.
+async function revert($: EngineInterface, file: FileDiff, isConfirmed: boolean) {
+  const v = await read($, view)
+  const step = v.steps[0]
+  if (v.index !== 0 || v.isTurnOpen || !step || step.sha !== v.shownSha) return
+  const paths = file.oldPath === undefined ? [file.path] : [file.path, file.oldPath]
+  const said = await script($, ['revert', isConfirmed ? 'apply' : 'check', step.sha, step.parent, ...paths]).then(
+    out => out.stdout.trim(),
+    () => 'failed',
+  )
+  if (said === 'ok') {
+    await update($, view, cur => ({ ...cur, confirming: file.path }))
+  } else if (said === 'reverted') {
+    await update($, view, cur => ({
+      ...cur,
+      confirming: '',
+      reverted: [...cur.reverted, file.path],
+      collapsed: cur.collapsed.includes(file.path) ? cur.collapsed : [...cur.collapsed, file.path],
+    }))
+  } else if (said === 'changed') {
+    await update($, view, cur => ({ ...cur, confirming: '', unrevertable: [...cur.unrevertable, file.path] }))
+  } else {
+    await update($, view, cur => ({ ...cur, confirming: '' }))
+    $.ui.toast(`VeroDiff: could not revert ${file.path}.`)
+  }
+}
+
+// Ask about this: where the hunk is, added to the prompt box for the person to finish.
+// Nothing is sent.
+async function ask($: EngineInterface, file: FileDiff, hunk: Hunk, step: Step) {
+  try {
+    const box = await $.prompt.read()
+    const gap = box.text === '' || /\s$/.test(box.text) ? '' : '\n'
+    const filled = await $.prompt.fill({ text: gap + askAbout(file, hunk, step), mode: 'append' })
+    if (!filled.isFilled) $.ui.toast('VeroDiff: the prompt box could not take the question.')
+  } catch {
+    $.ui.toast('VeroDiff: the prompt box could not take the question.')
   }
 }
 
@@ -252,6 +309,7 @@ export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
     openTurnAt = undefined
+    await update($, view, cur => ({ ...cur, isTurnOpen: false }))
     await $.command.register({
       name: COMMAND,
       description: 'VeroDiff: what changed on each turn (pane, last [N], band, purge)',
@@ -287,6 +345,7 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     const done = await next(e)
     openTurnAt = undefined
+    await update($, view, cur => ({ ...cur, isTurnOpen: false }))
     if (e.reason === 'clear') {
       await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', latest: undefined, index: 0, error: '' }))
     }
@@ -298,6 +357,7 @@ export const register: Register = on => {
     const isInsideOpenTurn = openTurnAt !== undefined && Date.now() - openTurnAt < STALE_TURN_MS
     if (!isInsideOpenTurn) {
       openTurnAt = Date.now()
+      await update($, view, cur => ({ ...cur, isTurnOpen: true, confirming: '' }))
       await snapshot($, 'pre', e.text)
     }
 
@@ -310,6 +370,7 @@ export const register: Register = on => {
     const done = await next(e)
     if (e.agentId === undefined) {
       openTurnAt = undefined
+      await update($, view, cur => ({ ...cur, isTurnOpen: false }))
       await snapshot($, 'post')
       await reload($, true)
     }
@@ -372,6 +433,7 @@ export const register: Register = on => {
         <Text dimColor>· {latest.count} ·</Text>
         <Text color="green">+{latest.adds}</Text>
         <Text color="red">{'\u2212'}{latest.dels}</Text>
+        {v.otherSession !== '' && <Text color="yellow">{'\u26a0'} another session here</Text>}
         {!v.isPaneOpen && (
           <Button key="show-diff" dimColor onPress={() => void openPane($, true)}>
             Show diff
@@ -435,6 +497,33 @@ export const register: Register = on => {
     // With more than one file the step opens with a list of them: each name jumps to
     // its diff, and each diff ends with a way back up to the list.
     const hasSummary = shown.length > 1
+    const more = (path: string) => () =>
+      void update($, view, cur => ({ ...cur, pages: { ...cur.pages, [path]: (cur.pages[path] ?? 0) + 1 } }))
+    // Revert is offered on the newest step only, and not while a turn runs.
+    const canRevert = v.index === 0 && !v.isTurnOpen
+    const before = step.turn === undefined ? 'this step' : 'this turn'
+    const revertControl = (file: FileDiff) => {
+      if (v.reverted.includes(file.path)) return <Text dimColor>{'\u21ba'} reverted</Text>
+      if (v.unrevertable.includes(file.path)) return <Text dimColor>changed since - not reverted</Text>
+      if (v.confirming === file.path) {
+        return (
+          <Box flexDirection="row" gap={1}>
+            <Text>Revert to before {before}?</Text>
+            <Button key={`revert-yes:${file.path}`} onPress={() => void revert($, file, true)}>
+              Yes
+            </Button>
+            <Button key={`revert-no:${file.path}`} onPress={() => void update($, view, cur => ({ ...cur, confirming: '' }))}>
+              No
+            </Button>
+          </Box>
+        )
+      }
+      return (
+        <Button key={`revert:${file.path}`} onPress={() => void revert($, file, false)}>
+          Revert
+        </Button>
+      )
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -443,6 +532,12 @@ export const register: Register = on => {
           <Text dimColor>
             step {v.index + 1} of {v.steps.length} (newest first) · {step.when}
           </Text>
+          {v.otherSession !== '' && (
+            <Text color="yellow">
+              {'\u26a0'} Another session is also editing this folder (last change {v.otherSession}) - its edits
+              appear in these diffs. Use a git worktree per session.
+            </Text>
+          )}
         </Box>
         <Box flexDirection="row" gap={1}>
           <Button key="older" hotkey="p" onPress={go(Math.min(v.index + 1, v.steps.length - 1))}>
@@ -481,32 +576,50 @@ export const register: Register = on => {
           </Box>
         )}
 
-        {shown.map(file => (
-          <Box key={`file:${file.path}`} flexDirection="column">
-            <Box flexDirection="row" gap={1}>
-              <Button key={`fold:${file.path}`} plain onPress={fold(file.path)}>
-                {`${isFolded(file.path) ? '▸' : '▾'} ${file.path}`}
-              </Button>
-              <Text color="green" dimColor={isFolded(file.path)}>+{file.adds}</Text>
-              <Text color="red" dimColor={isFolded(file.path)}>{'−'}{file.dels}</Text>
-            </Box>
-            {!isFolded(file.path) && (
-              <Box flexDirection="column">
-                {file.hunks ? (
-                  <Code source={file.hunks} format="diff" path={file.path} language={languageOf(file.path)} />
-                ) : (
-                  <Text dimColor>(binary or mode change)</Text>
-                )}
-                {file.isCut && <Text dimColor>... cut: too long for one view</Text>}
-                {hasSummary && (
-                  <Button key={`top:${file.path}`} plain dimColor onPress={jump(`goto:${shown[0]?.path ?? ''}`)}>
-                    {'↑ Files'}
-                  </Button>
-                )}
+        {shown.map(file => {
+          const count = shownHunks(file.hunks, v.pages[file.path] ?? 0)
+          const hidden = file.hunks.length - count
+          return (
+            <Box key={`file:${file.path}`} flexDirection="column">
+              <Box flexDirection="row" gap={1}>
+                <Button key={`fold:${file.path}`} plain onPress={fold(file.path)}>
+                  {`${isFolded(file.path) ? '▸' : '▾'} ${file.path}`}
+                </Button>
+                <Text color="green" dimColor={isFolded(file.path)}>+{file.adds}</Text>
+                <Text color="red" dimColor={isFolded(file.path)}>{'−'}{file.dels}</Text>
+                {canRevert && revertControl(file)}
               </Box>
-            )}
-          </Box>
-        ))}
+              {!isFolded(file.path) && (
+                <Box flexDirection="column">
+                  {file.hunks.length === 0 && <Text dimColor>(binary or mode change)</Text>}
+                  {file.hunks.slice(0, count).map((hunk, i) => (
+                    <Box key={`hunk:${file.path}:${i}`} flexDirection="column">
+                      <Code source={hunk.text} format="diff" path={file.path} language={languageOf(file.path)} />
+                      {hunk.isCut && <Text dimColor>... the rest of this hunk is too long to show</Text>}
+                      <Button key={`ask:${file.path}:${i}`} onPress={() => void ask($, file, hunk, step)}>
+                        Ask about this
+                      </Button>
+                    </Box>
+                  ))}
+                  {hidden > 0 && (
+                    <Box flexDirection="row" gap={1}>
+                      <Text dimColor>{`… ${hidden} more ${hidden === 1 ? 'hunk' : 'hunks'} not shown`}</Text>
+                      <Button key={`more:${file.path}`} onPress={more(file.path)}>
+                        Show more
+                      </Button>
+                    </Box>
+                  )}
+                  {hidden === 0 && file.isCut && <Text dimColor>... the rest is too long to show here</Text>}
+                  {hasSummary && (
+                    <Button key={`top:${file.path}`} plain dimColor onPress={jump(`goto:${shown[0]?.path ?? ''}`)}>
+                      {'↑ Files'}
+                    </Button>
+                  )}
+                </Box>
+              )}
+            </Box>
+          )
+        })}
         {v.files.length > MAX_FILES && <Text dimColor>+{v.files.length - MAX_FILES} more files</Text>}
       </Box>
     )

@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  askAbout,
   fenceFor,
   fitHunks,
   isShadowPath,
   languageOf,
+  otherSessionAt,
   parentOfOldest,
   parseLog,
   promptLabel,
+  shownHunks,
   splitFiles,
   stepSummary,
   submoduleNote,
@@ -114,9 +117,9 @@ describe('splitFiles', () => {
   test('one entry per file, hunks only, no carriage returns', () => {
     const [text, image] = splitFiles(DIFF)
     expect(text?.path).toBe('a.txt')
-    expect(text?.hunks).toBe('@@ -1,2 +1,3 @@\n alpha\n beta\n+gamma')
+    expect(text?.hunks.map(h => h.text)).toEqual(['@@ -1,2 +1,3 @@\n alpha\n beta\n+gamma'])
     expect(image?.path).toBe('logo.png')
-    expect(image?.hunks).toBe('')
+    expect(image?.hunks).toEqual([])
   })
 
   test('counts added and removed lines per file, not the --- / +++ headers', () => {
@@ -126,16 +129,117 @@ describe('splitFiles', () => {
     expect(splitFiles(DIFF).map(f => [f.adds, f.dels])).toEqual([[1, 0], [0, 0]])
   })
 
-  test('a file too long for one Code element still parses as hunks', () => {
-    const hunk = (n: number) => `@@ -${n},1 +${n},2 @@\n ctx\n${'+line\n'.repeat(40)}`
-    const long = `diff --git a/big b/big\n${Array.from({ length: 60 }, (_, i) => hunk(i * 10 + 1)).join('')}`
+  test('each hunk is its own entry, with where it starts on either side', () => {
+    const diff = 'diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-a\n+b\n@@ -9,2 +9,1 @@ fn\n-c\n d\n'
+    const [file] = splitFiles(diff)
+    expect(file?.hunks).toEqual([
+      { text: '@@ -1,1 +1,1 @@\n-a\n+b', isCut: false, oldStart: 1, newStart: 1 },
+      { text: '@@ -9,2 +9,1 @@ fn\n-c\n d', isCut: false, oldStart: 9, newStart: 9 },
+    ])
+    expect(file?.isCut).toBe(false)
+  })
+
+  test('a hunk too long for one Code element is cut and still parses', () => {
+    const diff = `diff --git a/big b/big\n@@ -1,1 +1,2001 @@\n ctx\n${'+line of text\n'.repeat(2000)}`
+    const [file] = splitFiles(diff)
+    const hunk = file?.hunks[0]
+    expect(hunk?.isCut).toBe(true)
+    expect((hunk?.text.length ?? 0) <= 9000).toBe(true)
+    expect(/^@@ -1,1 \+1,\d+ @@/.test(hunk?.text ?? '')).toBe(true)
+    expect(file?.adds).toBe(2000)
+  })
+
+  test('a file past what VeroDiff keeps says so, and keeps whole hunks', () => {
+    const hunk = (n: number) => `@@ -${n},1 +${n},2 @@\n ctx\n${'+line\n'.repeat(400)}`
+    const long = `diff --git a/big b/big\n${Array.from({ length: 120 }, (_, i) => hunk(i * 1000 + 1)).join('')}`
     const [file] = splitFiles(long)
     expect(file?.isCut).toBe(true)
-    expect((file?.hunks.length ?? 0) <= 9000).toBe(true)
-    expect(file?.adds).toBe(60 * 40)
-    // whole hunks only: the last one kept ends with its own last line
-    expect(file?.hunks.endsWith('+line')).toBe(true)
-    expect((file?.hunks.split('\n').length ?? 0) % 42).toBe(0) // a header, ctx, 40 lines
+    expect((file?.hunks.length ?? 0) < 120).toBe(true)
+    expect(file?.adds).toBe(120 * 400)
+    for (const h of file?.hunks ?? []) expect(h.text.endsWith('+line')).toBe(true)
+  })
+
+  test('a rename names where it came from; a new and a deleted file say so', () => {
+    const diff = [
+      'diff --git a/old.md b/new.md',
+      'similarity index 90%',
+      'rename from old.md',
+      'rename to new.md',
+      '--- a/old.md',
+      '+++ b/new.md',
+      '@@ -1 +1 @@',
+      '-a',
+      '+b',
+      'diff --git a/n.txt b/n.txt',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/n.txt',
+      '@@ -0,0 +1 @@',
+      '+n',
+      'diff --git a/g.txt b/g.txt',
+      'deleted file mode 100644',
+      '--- a/g.txt',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-g',
+      '',
+    ].join('\n')
+    expect(splitFiles(diff).map(f => [f.path, f.oldPath, f.status])).toEqual([
+      ['new.md', 'old.md', undefined],
+      ['n.txt', undefined, 'added'],
+      ['g.txt', undefined, 'deleted'],
+    ])
+  })
+})
+
+describe('shownHunks', () => {
+  const hunk = (size: number) => ({ text: 'x'.repeat(size), isCut: false, oldStart: 1, newStart: 1 })
+
+  test('one Code element worth at first, another with each press', () => {
+    const hunks = Array.from({ length: 10 }, () => hunk(4000))
+    expect(shownHunks(hunks, 0)).toBe(2)
+    expect(shownHunks(hunks, 1)).toBe(4)
+    expect(shownHunks(hunks, 9)).toBe(10)
+  })
+
+  test('always at least one hunk, however long', () => {
+    expect(shownHunks([hunk(9000), hunk(9000)], 0)).toBe(1)
+    expect(shownHunks([], 0)).toBe(0)
+  })
+})
+
+describe('askAbout', () => {
+  const [turn2, outside] = parseLog(LOG)
+  const file = (diff: string) => splitFiles(diff)[0]!
+
+  test('names the added lines and the turn', () => {
+    const f = file('diff --git a/x.ts b/x.ts\n--- a/x.ts\n+++ b/x.ts\n@@ -10,3 +10,5 @@\n ctx\n+one\n ctx\n+two\n+three\n ctx\n')
+    expect(askAbout(f, f.hunks[0]!, turn2!)).toBe('About x.ts lines 11\u201314 (changed in turn 2): ')
+  })
+
+  test('a single line, a removal and a deleted file', () => {
+    const one = file('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3,2 +3,2 @@\n ctx\n-old\n+new\n')
+    expect(askAbout(one, one.hunks[0]!, turn2!)).toBe('About x line 4 (changed in turn 2): ')
+    const cut = file('diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -3,3 +3,2 @@\n ctx\n-old\n ctx\n')
+    expect(askAbout(cut, cut.hunks[0]!, outside!)).toBe('About x near line 4 (lines removed outside a turn): ')
+    const gone = file('diff --git a/g b/g\ndeleted file mode 100644\n--- a/g\n+++ /dev/null\n@@ -1 +0,0 @@\n-g\n')
+    expect(askAbout(gone, gone.hunks[0]!, turn2!)).toBe('About g (deleted in turn 2): ')
+  })
+})
+
+describe('otherSessionAt', () => {
+  const refs = (lines: string[]) => lines.join('\n')
+  const now = 1_000_000
+
+  test('another session that changed the tree lately, by its newest snapshot', () => {
+    const out = otherSessionAt(refs([`${now - 60} refs/verodiff/session/B`, `${now - 300} refs/verodiff/session/C`]), 'A', now)
+    expect(/^\d\d:\d\d$/.test(out)).toBe(true)
+  })
+
+  test('never this session, and nobody idle past the window', () => {
+    expect(otherSessionAt(refs([`${now} refs/verodiff/session/A`]), 'A', now)).toBe('')
+    expect(otherSessionAt(refs([`${now - 3600} refs/verodiff/session/B`]), 'A', now)).toBe('')
+    expect(otherSessionAt('', 'A', now)).toBe('')
   })
 })
 

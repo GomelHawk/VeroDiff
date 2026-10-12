@@ -118,6 +118,22 @@ one line, and the file gets a `✓` in the list, so after an interruption you se
 glance which files are left. Folds belong to the step on screen only - showing another
 step, or a new turn arriving, means you are done with this one, and they are cleared.
 
+**Revert** beside a file's name puts that file back as it was before the step. It asks
+first - *Revert to before this turn?* **Yes** / **No** - and the file then shows
+`↺ reverted`. It is offered on the newest step only, and not while a turn is running:
+an older step's files may have been changed again since. A file that was edited after the
+step (by you, or by the next turn) is left alone and marked `changed since - not reverted`,
+so a revert never throws an edit away. A file the step created is deleted, a renamed one
+gets its old name back. The revert is an edit like any other: the next turn records it as
+`edits outside a turn`.
+
+**Ask about this** under each hunk adds where it is to your prompt -
+`About src/fetch.ts lines 10–29 (changed in turn 7): ` - for you to finish with a question.
+Nothing is sent until you press enter.
+
+A long file shows its first hunks, about one screenful; **Show more** under them draws the
+next ones.
+
 The newest step also sits in one row above the prompt -
 `VeroDiff turn 3 · 2 files · +5 −1` - so you see what the last turn did even with the
 pane closed. While the pane is closed, that row also has **Show diff**, which opens it
@@ -222,6 +238,11 @@ history. What they can't avoid is sharing a working tree: if both sessions edit 
 the same checkout during the same turn, both sets of edits appear in the diff. For real
 isolation, give each session its own `git worktree`.
 
+When another session has changed this working tree in the last 15 minutes, the pane says
+so at the top - `⚠ Another session is also editing this folder (last change 14:29)` - and
+the row above the prompt shows `⚠ another session here`, so the edits you did not expect
+have an explanation.
+
 ## Submodules
 
 A submodule - or any repository nested inside the project - is recorded the way git
@@ -264,7 +285,8 @@ clean up by hand.
 | A turn you expected is missing | A turn that changed nothing records no step, by design. |
 | `Changes inside submodule ... are not shown.` | The turn changed uncommitted work inside a submodule, which no snapshot holds. See [Submodules](#submodules). |
 | No syntax colours in the desktop app | The desktop app colours a diff by added and removed lines only; the terminal also highlights the code. That is Claude Code's drawing, not a setting. |
-| A step is cut short | One file's diff is cut to whole hunks of about 9,000 characters in the pane, and `/vero-diff last` at 60,000 in all. Run `git diff` yourself for the rest. |
+| A step is cut short | The pane draws a long file a screenful at a time: press **Show more**. A single hunk longer than about 9,000 characters, or a file past 200,000, is cut, and `/vero-diff last` stops at 60,000 in all. Run `git diff` yourself for the rest. |
+| `changed since - not reverted` | The file was edited after the step, so reverting it would lose that edit. Undo it by hand, or with git. |
 | Snapshots are taking up space | `/vero-diff purge` clears this project, `./uninstall.sh --purge` every project. Large files that are not ignored are copied on every turn that changes them; ignore them (see [Where snapshots live](#where-snapshots-live)). |
 
 ## Requirements

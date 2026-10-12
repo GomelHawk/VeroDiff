@@ -40,13 +40,17 @@ type World = {
   log?: string
   diffs?: Record<string, string>
   turnsBefore?: number
+  // what `snapshot.sh revert check|apply` prints
+  revert?: { check: string; apply: string }
+  // what `git for-each-ref` lists of the sessions' refs
+  refs?: string
 }
 
 // Everything beneath the plugin that a session would answer, from memory. Returns what
 // the plugin asked of the world: the panes it opened, the toasts it showed, the commands
 // it ran.
 function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {}) {
-  const seen = { opened: [] as string[], toasts: [] as string[], ran: [] as string[][] }
+  const seen = { opened: [] as string[], toasts: [] as string[], ran: [] as string[][], filled: [] as string[] }
   const shadow = world.shadow ?? SHADOW
   mock.store(on, store)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -62,14 +66,24 @@ function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {
   })
   on('session.id', () => ({ value: 'S1' }))
   on('session.root', () => ({ value: '/repo' }))
+  on('prompt.read', () => ({ value: { text: seen.filled.join(''), cursor: 0 } }))
+  on('prompt.fill', ($, e) => {
+    seen.filled.push(e.text)
+    return { isFilled: true, text: seen.filled.join('') }
+  })
   on('process.run', ($, e) => {
     seen.ran.push([...e.argv])
     const [cmd, , kind] = e.argv
+    if (cmd === 'bash' && kind === 'revert') {
+      const answers = world.revert ?? { check: 'ok', apply: 'reverted' }
+      return ok(`${e.argv[3] === 'apply' ? answers.apply : answers.check}\n`)
+    }
     if (cmd === 'bash') return ok(kind === 'where' ? `${shadow}\n` : '')
     if (cmd === 'du') return ok(`12K\t${shadow}\n`)
     // git runs as `env -u ... git --git-dir=<shadow> -c core.quotePath=false <subcommand> ...`
     const git = e.argv.slice(e.argv.indexOf('git') + 1)
-    const sub = git.find(arg => ['log', 'diff', 'rev-list', 'rev-parse'].includes(arg))
+    const sub = git.find(arg => ['log', 'diff', 'rev-list', 'rev-parse', 'for-each-ref'].includes(arg))
+    if (sub === 'for-each-ref') return ok(world.refs ?? '')
     if (sub === 'log') return ok(`${world.log ?? LOG}\n`)
     if (sub === 'diff') return ok((world.diffs ?? DIFFS)[git[git.length - 1] ?? ''] ?? '')
     if (sub === 'rev-list') return ok(`${world.turnsBefore ?? 0}\n`)
@@ -364,6 +378,101 @@ for (const surface of ['terminal', 'desktop'] as const) {
         expect(seen.ran.some(argv => argv[0] === 'rm')).toBe(false)
       })
     }
+
+    test('Revert asks first, then puts the file back and folds it', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'revert:a.txt' })
+      expect(await ui.find({ type: 'Text', text: 'Revert to before this turn?' })).toBeDefined()
+      expect(seen.ran.some(argv => argv[2] === 'revert' && argv[3] === 'apply')).toBe(false)
+      await ui.press({ key: 'revert-no:a.txt' })
+      expect(await ui.find({ key: 'revert-yes:a.txt' })).toBeUndefined()
+
+      await ui.press({ key: 'revert:a.txt' })
+      await ui.press({ key: 'revert-yes:a.txt' })
+      const applied = seen.ran.find(argv => argv[2] === 'revert' && argv[3] === 'apply')
+      expect(applied?.slice(4)).toEqual(['c3', 'c2', 'a.txt'])
+      expect(await ui.find({ type: 'Text', text: '\u21ba reverted' })).toBeDefined()
+      expect(await ui.find({ key: 'revert:a.txt' })).toBeUndefined()
+      expect((await ui.findAll({ type: 'Code' })).length).toBe(1) // folded
+      // the other file is untouched and can still be reverted
+      expect(await ui.find({ key: 'revert:notes.md' })).toBeDefined()
+    })
+
+    test('Revert leaves a file edited since alone and says so', async ($, on) => {
+      const seen = fakeWorld(on, {}, { revert: { check: 'changed', apply: 'changed' } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'revert:a.txt' })
+      expect(await ui.find({ type: 'Text', text: 'changed since - not reverted' })).toBeDefined()
+      expect(await ui.find({ key: 'revert-yes:a.txt' })).toBeUndefined()
+      expect(seen.ran.some(argv => argv[3] === 'apply')).toBe(false)
+    })
+
+    test('Revert is offered on the newest step only', async ($, on) => {
+      fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'older' })
+      expect(await ui.find({ key: 'revert:a.txt' })).toBeUndefined()
+      await ui.press({ key: 'latest' })
+      expect(await ui.find({ key: 'revert:a.txt' })).toBeDefined()
+    })
+
+    test('Ask about this adds where the hunk is to the prompt, and sends nothing', async ($, on) => {
+      const seen = fakeWorld(on)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      await ui.press({ key: 'ask:notes.md:0' })
+      expect(seen.filled).toEqual(['About notes.md lines 1\u20132 (changed in turn 2): '])
+      await ui.press({ key: 'ask:a.txt:0' })
+      expect(seen.filled[1]).toBe('About a.txt line 1 (changed in turn 2): ')
+      expect(seen.toasts).toEqual([])
+    })
+
+    test('Show more draws the next hunks of a long file', async ($, on) => {
+      const hunk = (n: number) => [`@@ -${n},1 +${n},1 @@`, `-${'o'.repeat(3000)}`, `+${'n'.repeat(3000)}`].join('\n')
+      const big = ['diff --git a/big.txt b/big.txt', ...Array.from({ length: 5 }, (_, i) => hunk(i * 100 + 1)), ''].join('\n')
+      fakeWorld(on, {}, { log: 'b2\tb1\tnow\t\t[post] long edits\nb1\t\tnow\t\t[pre] long edits', diffs: { b2: big } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      expect((await ui.findAll({ type: 'Code' })).length).toBe(1)
+      expect(await ui.find({ type: 'Text', text: '\u2026 4 more hunks not shown' })).toBeDefined()
+      // about one Code element's worth per press: two hunks of 6,000 characters each never
+      let presses = 0
+      while (await ui.find({ key: 'more:big.txt' })) {
+        await ui.press({ key: 'more:big.txt' })
+        presses++
+      }
+      expect(presses).toBe(3)
+      expect((await ui.findAll({ type: 'Code' })).length).toBe(5)
+    })
+
+    test('another session editing this tree is named in the pane and the band', async ($, on) => {
+      const now = Math.floor(Date.now() / 1000)
+      fakeWorld(on, {}, { refs: `${now} refs/verodiff/session/S1\n${now - 60} refs/verodiff/session/S2\n` })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(await ui.find({ type: 'Text', text: /^\u26a0 Another session is also editing this folder \(last change \d\d:\d\d\)/ })).toBeDefined()
+      expect(await band.find({ type: 'Text', text: '\u26a0 another session here' })).toBeDefined()
+    })
+
+    test('no warning when only this session changed the tree', async ($, on) => {
+      const now = Math.floor(Date.now() / 1000)
+      fakeWorld(on, {}, { refs: `${now} refs/verodiff/session/S1\n` })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+
+      expect(await ui.find({ type: 'Text', text: /Another session/ })).toBeUndefined()
+    })
 
     test('Hide is drawn on the terminal only', async ($, on) => {
       fakeWorld(on)

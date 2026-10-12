@@ -7,6 +7,9 @@
 #   snapshot.sh post         snapshot it as the turn ends
 #   snapshot.sh where        print the shadow repository's path, take nothing
 #   snapshot.sh prune DAYS   drop sessions whose newest snapshot is older than DAYS
+#   snapshot.sh revert check|apply SHA PARENT PATH [OLD_PATH]
+#                            put one file back as it was in PARENT, provided it is still
+#                            as SHA left it; prints ok (check), reverted, changed or failed
 #
 # Input comes from the environment, so no JSON parser is needed:
 #   VERODIFF_SESSION_ID   the session's id (its ref, index and label are its own)
@@ -127,7 +130,63 @@ mv -f "$SHADOW/info/exclude.$$" "$SHADOW/info/exclude" 2>/dev/null
 { cat "$COMMON/info/attributes" 2>/dev/null; } > "$SHADOW/info/attributes.$$" 2>/dev/null
 mv -f "$SHADOW/info/attributes.$$" "$SHADOW/info/attributes" 2>/dev/null
 
+# A revert writes files, and how git turns line endings on the way out is the project's
+# setting, not the shadow's: read it while git still reads the project's config.
+eol=()
+if [ "$KIND" = "revert" ]; then
+  for key in core.autocrlf core.eol; do
+    value="$(git config "$key" 2>/dev/null)" && eol+=(-c "$key=$value")
+  done
+fi
+
 export GIT_DIR="$SHADOW" GIT_WORK_TREE="$TOP"
+
+# --- revert one file of the newest step -------------------------------------
+# PATH (and OLD_PATH, a rename's source) go back to what PARENT holds, but only while the
+# working tree still holds what SHA recorded: an edit made since would be lost. The check
+# reads the files the way a snapshot does - into an index of its own, filters and all -
+# so a line-ending or clean filter cannot make an untouched file look edited. A path the
+# parent lacks (a file the step created) is deleted. `check` stops after the check.
+if [ "$KIND" = "revert" ]; then
+  mode="${2:-}" sha="${3:-}" parent="${4:-}"
+  shift 4 2>/dev/null || { echo failed; exit 0; }
+  case "$mode" in check|apply) ;; *) echo failed; exit 0 ;; esac
+  case "$sha$parent" in *[!0-9a-f]*|'') echo failed; exit 0 ;; esac
+  paths=()
+  for path in "$@"; do
+    [ -n "$path" ] || continue
+    case "/$path/" in */../*|*/./*|//*) echo failed; exit 0 ;; esac
+    paths+=("$path")
+  done
+  [ ${#paths[@]} -gt 0 ] || { echo failed; exit 0; }
+  export GIT_LITERAL_PATHSPECS=1 GIT_INDEX_FILE="$SHADOW/index-revert-$sid.$$"
+  rm -f "$GIT_INDEX_FILE"
+  # only what is on disk: a missing path fails the whole add, "did not match any files"
+  present=()
+  for path in "${paths[@]}"; do
+    if [ -e "$TOP/$path" ] || [ -L "$TOP/$path" ]; then present+=("$path"); fi
+  done
+  [ ${#present[@]} -eq 0 ] ||
+    git ${filters[@]+"${filters[@]}"} add -A --ignore-errors -- "${present[@]}" >/dev/null 2>&1
+  now="$(git write-tree 2>/dev/null)"
+  if [ -z "$now" ] || [ "$(git ls-tree "$now" -- "${paths[@]}" 2>/dev/null)" != \
+                         "$(git ls-tree "$sha" -- "${paths[@]}" 2>/dev/null)" ]; then
+    rm -f "$GIT_INDEX_FILE"; echo changed; exit 0
+  fi
+  if [ "$mode" = "check" ]; then rm -f "$GIT_INDEX_FILE"; echo ok; exit 0; fi
+  result=reverted
+  for path in "${paths[@]}"; do
+    if git cat-file -e "$parent:$path" 2>/dev/null; then
+      git ${filters[@]+"${filters[@]}"} ${eol[@]+"${eol[@]}"} checkout "$parent" -- "$path" >/dev/null 2>&1 \
+        || result=failed
+    else
+      rm -f "$TOP/$path" 2>/dev/null || result=failed
+    fi
+  done
+  rm -f "$GIT_INDEX_FILE"
+  echo "$result"
+  exit 0
+fi
 
 # --- the prompt, kept per session for the `post` snapshot that follows ------
 # The module hands it over already cut to length, by characters. Never shorten it here:
