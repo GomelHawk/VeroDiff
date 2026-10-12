@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.2.0 - 2026-10-12
+
+Act on what a turn did, right from its diff: undo it, or ask Claude about it.
+
+### New
+
+- **Revert a file.** A **Revert** button beside each file of the newest step puts that file
+  back as it was before the turn, after asking *Revert to before this turn?* **Yes** /
+  **No**. A file the turn created is deleted, a renamed one gets its old name back. It
+  catches edits made through any tool, shell commands included.
+- **Revert all files of this turn**, after the last file: every file at once, all or
+  nothing. If even one of them was edited since, none is touched and the pane names the
+  file that stopped it, so a turn is never left half undone.
+- **Safe by design.** Revert is offered on the newest step only and never while a turn is
+  running, and a file edited after the turn - by you or by Claude - is left alone and
+  marked `changed since - not reverted`. A revert is recorded like any other edit, as
+  `edits outside a turn`, so it can be reviewed and reverted in turn.
+- **Ask about this.** A button under every hunk adds where it is to your prompt -
+  `About src/fetch.ts lines 11–14 (changed in turn 7): ` - for you to finish with a
+  question. Nothing is sent until you press enter.
+- **Show more.** A long file is drawn a screenful at a time; **Show more** draws the next
+  hunks instead of the diff stopping at about 9,000 characters.
+- **Another session in the same folder is named.** When another session has changed this
+  working tree in the last 15 minutes, the pane and the row above the prompt say so - the
+  reason a turn shows edits nobody asked for.
+
+### Improved
+
+- Claude's `turn_diff` tool describes steps and their limits more precisely, and
+  `/vero-diff` lists `band` among its subcommands.
+
 ## 1.1.2 - 2026-10-06
 
 Snapshots you can trust in more projects: fixes from a full outside review
