@@ -31,15 +31,13 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
-      # `claude plugin validate` reads local files only - no account, no API key.
-      - name: Validate the marketplace catalog
-        run: claude plugin validate .
-
+      # `claude plugin validate` reads local files only - no account, no API key. The
+      # catalog this plugin is listed in is VeroPlugins; there is none here to validate.
       - name: Validate the plugin manifest, hooks module and state contract
         run: claude plugin validate ./plugins/vero-diff
 
       - name: Validate again, warnings as errors
-        run: claude plugin validate . --strict
+        run: claude plugin validate ./plugins/vero-diff --strict
 
       # The pane's TypeScript, run against the engine itself: no account, no API key.
       - name: Test the hooks module

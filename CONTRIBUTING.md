@@ -38,13 +38,11 @@ history shrank, what `/vero-diff purge` deletes and what it refuses, and the pan
 drawn on both the terminal and the desktop surface: its navigation, the file list, Hide,
 and what `/clear` does to it.
 
-Then validate the structure. The two runs check different things - the marketplace
-catalog, and the plugin's own manifest, hooks and component directories:
+Then validate the structure - the plugin's manifest, hooks module and state contract:
 
 ```bash
-claude plugin validate .                    # marketplace.json
-claude plugin validate ./plugins/vero-diff  # plugin.json, hooks module, state contract
-claude plugin validate . --strict           # treat warnings as errors, for CI
+claude plugin validate ./plugins/vero-diff           # plugin.json, hooks module, state contract
+claude plugin validate ./plugins/vero-diff --strict  # treat warnings as errors, for CI
 ```
 
 Then load the plugin for one session, with no install and no marketplace:
@@ -63,16 +61,10 @@ transcript says why, and `claude --debug` has the details.
 A `--plugin-dir` plugin shadows an installed plugin of the same name for that session, so
 you can test changes without uninstalling the released copy.
 
-If anything behaves oddly under `--plugin-dir`, fall back to the full path, which also
-exercises the marketplace layout:
-
-```
-/plugin marketplace add /path/to/VeroDiff
-/plugin install vero-diff@verodiff-marketplace
-```
-
-A local-directory marketplace loads the plugin **in place** rather than copying it into
-the cache, so your edits apply at the next `/reload-plugins` with no version bump.
+The two files `plugins/vero-diff/hooks/source-check.ts` and
+`plugins/vero-diff/tests/source-check.test.ts` are byte-identical copies of
+`VeroPlugins/shared/hooks/source-check.ts` and `VeroPlugins/shared/tests/source-check.test.ts`.
+Change them there first, then copy; VeroPlugins' CI fails while a copy differs.
 
 ### What CI checks
 
@@ -87,60 +79,32 @@ the cache, so your edits apply at the next `/reload-plugins` with no version bum
 
 ## Share it
 
-VeroDiff is already a marketplace repository, so publishing is pushing `main`. Users then
-need two lines:
+VeroDiff is listed in [VeroPlugins](https://github.com/GomelHawk/VeroPlugins), the one
+marketplace for every Vero plugin, so publishing is pushing `main`: the catalog's entry
+follows this repository's `main`. Users then need two lines:
 
 ```
-/plugin marketplace add GomelHawk/VeroDiff
-/plugin install vero-diff@verodiff-marketplace
+/plugin marketplace add GomelHawk/VeroPlugins
+/plugin install vero-diff@vero-plugins
 ```
-
-Any git host works - GitLab, Bitbucket, self-hosted - with the full URL instead of the
-`owner/repo` shorthand.
-
-Forking this for your own plugin? The fields to change are `owner.name` in
-`.claude-plugin/marketplace.json`, `author.name`, `homepage` and `repository` in
-`plugins/vero-diff/.claude-plugin/plugin.json`, and the copyright line in `LICENSE`.
 
 ### Releasing updates
 
 `version` in `plugin.json` pins the plugin: users keep their cached copy until that string
-changes, so bump it on every release. Never set `version` in both `plugin.json` and the
-marketplace entry - `plugin.json` silently wins.
-
-Never change the plugin's `name` without adding a `renames` entry to `marketplace.json`;
-the name is what users' `enabledPlugins` keys on.
+changes, so bump it on every release. The catalog entry in VeroPlugins carries no
+version, so nothing changes there for a release; pushing a `v<version>` tag runs
+`.github/workflows/release.yml`, which tells VeroPlugins' CI to re-check the entry.
 
 The full release procedure - collecting changes, choosing the number, the changelog and
 the GitHub Release - is in `CLAUDE.md` under "Cutting a release".
 
 ### Other distribution routes
 
-- **Teams**: commit `extraKnownMarketplaces` and `enabledPlugins` to a repo's
-  `.claude/settings.json`, and everyone who trusts that folder gets VeroDiff with no
-  separate prompt.
-- **Wider audience**: submit VeroDiff to
-  [Anthropic's directory](https://claude.ai/directory), the catalog people browse on
-  claude.ai and in Cowork. One listing reaches claude.ai, Cowork and Claude Code, where
-  it loads through account sync as `vero-diff@synced`. Submit from the developer portal
-  at [claude.ai/directory/manage](https://claude.ai/directory/manage), following
-  [Submit a plugin](https://claude.com/docs/plugins/submit#submit-a-plugin). It needs a
-  paid claude.ai plan: on Pro and Max you submit from your own account, on Team and
-  Enterprise an Owner does (or, on Enterprise, a member the Owner gave the **Directory**
-  permission). The portal applies rules of its own on top of `claude plugin validate`,
-  so run the
-  [pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist#run-the-checks-before-you-submit)
-  first. VeroDiff is a Claude Code mod, so say in the listing that it works in Claude
-  Code only - the terminal and the desktop app's Code tab - and check the
-  [component support table](https://claude.com/docs/plugins/platform-support#compare-component-support-by-app)
-  for what claude.ai and Cowork load. The official `claude-plugins-official`
-  marketplace takes no submissions through the portal; Anthropic decides what goes in
-  it, through its partner contacts.
-- **No git on the user's machine**: publish a zip and list it with an `archive` source
-  plus a `sha256` pin.
-
-Reserved marketplace names (`claude-plugins-official`, `anthropic-plugins`, and similar)
-can't be used, which is why this catalog is called `verodiff-marketplace`.
+- **Teams**: commit `extraKnownMarketplaces` (VeroPlugins) and `enabledPlugins`
+  (`vero-diff@vero-plugins`) to a repo's `.claude/settings.json` - `./install.sh --scope
+  project DIR` writes exactly that - and everyone who trusts that folder gets VeroDiff
+  with no separate prompt.
 
 VeroDiff has no top-level `bin/` directory, which claude.ai **organization settings**
-distribution would reject, so that route takes it as it is.
+distribution would reject. Whatever the route, a copy that does not come from VeroPlugins
+pauses and shows how to move, so every route ends at `vero-diff@vero-plugins`.

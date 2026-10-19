@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0 - 2026-10-19
+
+VeroDiff now comes from VeroPlugins, the one place every Vero plugin is installed from.
+
+### Changed
+
+- **Install from VeroPlugins.** `/plugin marketplace add GomelHawk/VeroPlugins`, then
+  `/plugin install vero-diff@vero-plugins`. Updates come the same way:
+  `/plugin marketplace update vero-plugins`, `/plugin update vero-diff@vero-plugins`.
+- **A copy installed from anywhere else pauses.** It takes no snapshots and opens no
+  panel; instead, a row above the prompt holds three buttons that put the move commands
+  into the prompt box, one Enter each. Your history of changes is kept through the move.
+- **Two copies never act at once.** A copy from VeroPlugins that finds an older copy of
+  itself still enabled pauses too, and offers one button that removes the old one.
+
+### Improved
+
+- **Other plugins' rows stay visible** under VeroDiff's row above the prompt.
+- **The `⚠` warning sign** no longer swallows the space after it in the terminal.
+
 ## 1.2.0 - 2026-10-12
 
 Act on what a turn did, right from its diff: undo it, or ask Claude about it.

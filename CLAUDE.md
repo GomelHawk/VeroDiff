@@ -1,7 +1,9 @@
 # VeroDiff - working notes
 
 Context for continuing work on this repository. The current version is whatever
-`plugins/vero-diff/.claude-plugin/plugin.json` says; no other file states one.
+`plugins/vero-diff/.claude-plugin/plugin.json` says; no other file states one. The
+plugin's name is always written **VeroDiff** (display) or `vero-diff` (key); the slogan
+is *One turn, one diff.*
 
 ## Working rules
 
@@ -20,29 +22,38 @@ Context for continuing work on this repository. The current version is whatever
 - **Finish with a really short commit description.** When an implementation is done, hand
   back a one-line commit message for the owner to use. One line, no body, no explanation
   wrapped around it.
+- **Documentation describes the plugin as it is, not its history.** No "was decided",
+  "replaced", "earlier design" or similar in any published file; a section that moves a
+  user from an older release is the one exception.
 
 ## What this is
 
-A Claude Code plugin that lets you review **what changed on each turn**. Since 1.0 it is a
+A Claude Code plugin that lets you review **what changed on each turn**. It is a
 **mod**: one hooks module (TypeScript, function hooks) that takes a snapshot at each end of
 a turn and draws the diff of each turn in a native pane - a sidebar in the terminal, a
 panel in the desktop app's Code tab. The diff of a turn is `git diff` between two
 snapshots.
 
 The problem it solves: built-in `/diff` shows all uncommitted work at once because it has
-no notion of where a turn started.
+no notion of where a turn started. *One turn, one diff.*
+
+Repository `GomelHawk/VeroDiff`, plugin `vero-diff`, display name `VeroDiff`, command
+`/vero-diff`, MIT. English only, by the owner's decision. Installed only from
+[VeroPlugins](https://github.com/GomelHawk/VeroPlugins) (marketplace `vero-plugins`), the
+one catalog for every Vero plugin; that repository's CLAUDE.md has the catalog rules and
+the canonical source check, and its STANDARD.md the rules every Vero plugin follows.
 
 ## Repository layout
 
 ```
-verodiff/                                  marketplace repo root
-├── .claude-plugin/marketplace.json        catalog: name "verodiff-marketplace"
+VeroDiff/                                  the plugin's repository (the catalog is VeroPlugins)
 ├── .gitattributes                         forces LF: snapshot.sh and the scripts are bash
 ├── .github/workflows/ci.yml               manifests + plugin test, shell lint, smoke, endings
+├── .github/workflows/release.yml          a v* tag tells VeroPlugins' CI to re-check the entry
 ├── .github/dependabot.yml                 watches the CI actions; there are no deps
-├── assets/                                promo2.png (README hero), promo.png (0.1.x), logos
+├── assets/                                logo.png, horizontal-logo.png
 ├── tests/smoke.sh                         snapshot.sh's suite: git + bash only
-├── install.sh                             validate -> marketplace add -> plugin install
+├── install.sh                             validate -> add VeroPlugins -> plugin install
 │                                          (--scope project|local DIR for a project)
 ├── uninstall.sh                           plugin uninstall (+ --scope, --purge)
 ├── CLAUDE.md                              this file
@@ -51,11 +62,13 @@ verodiff/                                  marketplace repo root
 └── plugins/vero-diff/                     the plugin, name "vero-diff"
     ├── .claude-plugin/plugin.json         manifest: version, "types" contract
     ├── hooks/hooks.json                   { "modules": ["./register.tsx"] }, nothing else
-    ├── hooks/register.tsx                 the mod: snapshots, /vero-diff, the pane
+    ├── hooks/register.tsx                 the mod: snapshots, /vero-diff, the pane, stopped mode
     ├── hooks/steps.ts                     pure parsing of git output (no `$`), tested
+    ├── hooks/source-check.ts              the source check: byte-identical copy of VeroPlugins/shared/hooks/
     ├── types/index.d.ts                   $.state contract: PluginState['vero-diff']
     ├── tests/steps.test.ts                `claude plugin test`: steps.ts
-    ├── tests/pane.test.ts                 `claude plugin test`: the pane, both surfaces
+    ├── tests/source-check.test.ts         `claude plugin test`: the source check's table (copy of VeroPlugins/shared/tests/)
+    ├── tests/pane.test.ts                 `claude plugin test`: the pane, both surfaces, stopped mode
     └── scripts/snapshot.sh                snapshot / where / prune / revert; called by the module
 ```
 
@@ -173,13 +186,40 @@ shows) and, while `view.isPaneOpen` is false, **Show diff**, which opens the pan
 command does. Its **×** (`hide-band`) removes it entirely - the hook returns `next(e)`, so
 no row is left - and `$.store` key `isBandHidden` keeps it gone across sessions until
 `/vero-diff band`. It steps aside for a survey and draws nothing with no steps. It
-replaced `$.ui.status` in 1.1.1 - see the gotcha below.
+replaced `$.ui.status` in 1.1.1 - see the gotcha below. The band is one site that every
+plugin's hook passes in turn: VeroDiff draws its row and then **what `next(e)` drew
+beneath it** (VeroDotto's rows, say), in one column, so neither plugin hides the other;
+before, the plugin first in line drew alone until its row was closed.
 
 **The command and the tool.** `/vero-diff` opens the pane, `/vero-diff last [N]` answers
 `command.run` with `{ text }` - markdown the model reads too - and `/vero-diff purge`
 deletes the project's shadow repo. The model has the same diff as the tool
 `mcp__vero-diff__turn_diff` (`{ step? }`), registered in `session.start` and served by a
 `tool.call` hook. Everything is English only, by the owner's decision.
+
+**Source check.** VeroDiff works only when installed from VeroPlugins. `checkSource()`
+reads `sourceOf($.plugin.root)` from `hooks/source-check.ts` (the canonical copy is
+`VeroPlugins/shared/hooks/source-check.ts`; CI there fails when this copy differs):
+`home` is a root under `plugins/cache/vero-plugins/`, `dev` a root with no `plugins/cache`
+segment (`--plugin-dir`, `CLAUDE_CODE_PLUGIN_DIRS`, `claude plugin test`), `foreign` any
+other marketplace's cache folder. The engine gives a plugin no provenance of its own, so
+the path is the check. A `dev` copy also reads `$.env.get('VERO_TEST_ROOT')` and takes
+its source from that path when set - the test seam; only a dev copy consults it, so no
+installed copy can opt out. A `home` copy then reads `$.settings.read({ source })` for
+`user`, `project` and `local` and `legacyCopies()` finds an older copy of `vero-diff`
+still enabled under another marketplace. Both decided in `session.start` before anything
+else and re-read by `refreshSource()` on `turn.start` - every turn while stopped, so the
+old copy's removal is seen at the next Enter, and at most every 10 s (`RECHECK_MS`,
+`$.clock.now()`) while working - kept in `view.source` and `view.legacy`. While stopped (`isStopped()`): no snapshots, no `$.tool.register`, no
+prune, no pane (the pane hook draws an empty Box), the command and the tool answer the
+move message (`stoppedMarkdown` / `legacyMarkdown`), one toast at `session.start`, and
+the band draws the stopped row whatever `isBandHidden` says: `stoppedBand` with three
+buttons (`vero-diff-move:1..3`, `MOVE_LABELS`) that fill `moveSteps()` into the prompt
+box with `$.prompt.fill({ mode: 'replace' })`, or `legacyBand` with one
+(`vero-diff-move:remove`, `removeStep()`), then `RESTART_NOTE`; no ×. A draft in the box
+is asked about first (`view.confirmingFill`, `REPLACE_QUESTION`, keys `:replace` /
+`:cancel`); a refused fill toasts `fillRefusedToast`. Nothing runs by itself, and the
+snapshot cache is never touched while stopped.
 
 ## Gotchas discovered the hard way
 
@@ -197,12 +237,17 @@ any of that come back.
 - **Never add a top-level `bin/`.** claude.ai rejects a plugin with one when distributed
   through Organization settings. 1.0 removed it; the smoke test guards it.
 - **`version` in `plugin.json` pins the plugin.** Users keep the cached copy until the
-  string changes. Bump it on every release, and never set `version` in both `plugin.json`
-  and the marketplace entry - the manifest silently wins.
-- **`name` is the user-visible key** in `enabledPlugins`. Renaming without a `renames`
-  entry in `marketplace.json` breaks every existing install.
-- **Reserved marketplace names** (`claude-plugins-official`, `anthropic-plugins`, and
-  similar) cannot be used.
+  string changes. Bump it on every release. Never put a `version` in the catalog entry -
+  the catalog is VeroPlugins, whose CLAUDE.md has the catalog's own gotchas (`renames`,
+  reserved names, the permanent catalog name).
+- **A plugin cannot read its own provenance.** `$.plugin` has `name` and `root` only; the
+  loader's `<name>@<marketplace>` is on the `plugin.register` event, which a plugin
+  cannot hook for itself. Hence the path-based source check.
+- **`$.settings.read({ source: 'user' | 'project' | 'local' })`** returns that one file's
+  object, `enabledPlugins` included (`<plugin>@<marketplace>: true`), with no prompt; a
+  source with no file answers `{}`.
+- **`$.env.get` takes a string literal**; `claude plugin validate` lists the names read
+  (`VERO_TEST_ROOT`).
 - **A `tool.call` matcher must be a literal string.** A template literal
   (`` `mcp__vero-diff__${TOOL}` ``) validates but the validator reads it as `tool=?`.
 - **Give a gating hook a `.catch`.** `claude plugin validate` flags `ui.close` and
@@ -212,7 +257,7 @@ any of that come back.
 - **`--scope project|local` writes to the current directory's `.claude/`.** Both
   `claude plugin marketplace add` and `claude plugin install` take `--scope`, and both
   write where they run. So `install.sh --scope project` takes the project's DIR and runs
-  there, and declares the GitHub marketplace, not the clone's path, which no teammate has.
+  there, and declares VeroPlugins, not the clone's path, which no teammate has.
 - **The mod API is early access.** The engine's own declaration says the surface may
   change between releases. Re-run `claude plugin validate` and `claude plugin test` against
   each new Claude Code release before cutting one of ours.
@@ -272,6 +317,8 @@ any of that come back.
   gets token colours in the terminal, but the desktop colours only the added and removed
   lines - with `path`, and with `language` named outright (`languageOf()`) alike, which
   was tried and changed nothing. Nothing in the plugin can fix it; the README says so.
+- **`⚠` is drawn wider than its one cell** in many terminal fonts and covers the space
+  after it (`⚠another session here`), so it is always followed by two spaces (`WARN`).
 - **Do not use `$.ui.status` for good news.** The engine draws a plugin's status as a
   pinned notice: a `⚠` and the plugin's name in front of the text, neither of which the
   call can turn off. A summary there read as a warning, with the name twice
@@ -349,12 +396,11 @@ any of that come back.
 Three checks, all run by CI, none needing an account or the network:
 
 ```bash
-tests/smoke.sh                              # snapshot.sh: 82 assertions, git + bash only
-claude plugin test ./plugins/vero-diff      # steps.ts and the pane, against the engine
+tests/smoke.sh                                       # snapshot.sh + repo hygiene: git + bash only
+claude plugin test ./plugins/vero-diff               # steps.ts, source-check.ts, the pane and stopped mode
 
-claude plugin validate .                    # marketplace catalog
-claude plugin validate ./plugins/vero-diff  # manifest, hooks module, state contract
-claude plugin validate . --strict           # for CI
+claude plugin validate ./plugins/vero-diff           # manifest, hooks module, state contract
+claude plugin validate ./plugins/vero-diff --strict  # for CI
 ```
 
 `claude plugin validate` reads the module the way the engine will - every hook, every
@@ -452,8 +498,8 @@ entirely - their answer wins over the table above. Never bump without a reply.
 ### 4. Make the edits
 
 - **`plugins/vero-diff/.claude-plugin/plugin.json`** - `version`. The only place a version
-  has any effect, and the only file that *must* change. Never also put `version` in the
-  marketplace entry; the manifest silently wins.
+  has any effect, and the only file that *must* change. The catalog entry in VeroPlugins
+  carries no version.
 - **`plugins/vero-diff/CHANGELOG.md`** - a new `## <version> - <YYYY-MM-DD>` section at the
   top, in the house style: user-facing wording, grouped, never raw commit subjects.
 - Anything the release makes untrue in `README.md`, `plugins/vero-diff/README.md` (keep
@@ -479,21 +525,23 @@ gh release create v<version> --title "VeroDiff <version>" --notes-file notes.md
 
 ### What a release actually is
 
-A user's marketplace tracks **`main`**, not tags - `claude plugin marketplace add` has no
-ref, tag or branch option, and the stored source is just `{"source":"github","repo":...}`.
-So pushing a bumped `version` to `main` **is** the release; the tag and the GitHub Release
-only announce it. A pushed tag is *not* a GitHub Release either - the Releases page stays
+A user's marketplace is VeroPlugins, whose entry for `vero-diff` is a `git-subdir`
+source following this repository's **`main`** - `claude plugin marketplace add` has no
+ref, tag or branch option. So pushing a bumped `version` to `main` **is** the release;
+the tag and the GitHub Release only announce it, and the `v<version>` tag also runs
+`release.yml`, which tells VeroPlugins' CI to re-check the entry (it needs the
+`VEROPLUGINS_DISPATCH_TOKEN` secret in this repository). A pushed tag is *not* a GitHub Release either - the Releases page stays
 empty until one is published on top of the tag, so `gh release create` (or **Publish
 release**, not **Save draft**, in the web form) is a step of its own. Two consequences
 worth remembering:
 
 - a fix pushed to `main` without a version bump reaches nobody - the cache is keyed by the
-  version string, at `~/.claude/plugins/cache/verodiff-marketplace/vero-diff/<version>/`
+  version string, at `~/.claude/plugins/cache/vero-plugins/vero-diff/<version>/`
 - unfinished work sitting on `main` ships the moment the version changes, so keep it on a
   branch
 
-Users update with `/plugin marketplace update verodiff-marketplace` then
-`/plugin update vero-diff@verodiff-marketplace`, and a restart. Nothing auto-updates and
+Users update with `/plugin marketplace update vero-plugins` then
+`/plugin update vero-diff@vero-plugins`, and a restart. Nothing auto-updates and
 nothing notifies them, which is why the GitHub Release matters.
 
 ## Open ideas, not implemented

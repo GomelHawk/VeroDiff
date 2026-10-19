@@ -1,0 +1,24 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  notify-catalog:
+    name: Tell VeroPlugins
+    runs-on: ubuntu-latest
+    steps:
+      # VeroPlugins' CI re-checks this plugin's entry on every release. GITHUB_TOKEN cannot
+      # reach another repository, so this uses a fine-grained token stored as a secret.
+      - name: Send plugin-released to GomelHawk/VeroPlugins
+        env:
+          GH_TOKEN: ${{ secrets.VEROPLUGINS_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/GomelHawk/VeroPlugins/dispatches \
+            -f event_type=plugin-released \
+            -f 'client_payload[plugin]=vero-diff' \
+            -f "client_payload[version]=${GITHUB_REF_NAME#v}"

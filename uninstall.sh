@@ -36,12 +36,12 @@ esac
 # A step that finds nothing to remove is not fatal - the plugin may never have been
 # installed at this scope - but it says so rather than passing in silence.
 echo "Uninstalling the plugin at $SCOPE scope (this removes its hooks module and command)..."
-(cd "$DIR" && claude plugin uninstall "vero-diff@verodiff-marketplace" --scope "$SCOPE") \
+(cd "$DIR" && claude plugin uninstall "vero-diff@vero-plugins" --scope "$SCOPE") \
   || echo "  (not removed: see the message above)"
 
-echo "Removing the marketplace registration..."
-(cd "$DIR" && claude plugin marketplace remove "verodiff-marketplace" --scope "$SCOPE") \
-  || echo "  (not removed: see the message above)"
+# The VeroPlugins marketplace stays: other Vero plugins install from it. Remove it by
+# hand with `claude plugin marketplace remove vero-plugins` once none is left.
+echo "The VeroPlugins marketplace is kept (other Vero plugins use it)."
 
 # Only what snapshot.sh creates is deleted: a <project>-<hex>.git that git calls a bare
 # repository. VERODIFF_DIR may point anywhere - a shared ~/.cache, say - so the folder

@@ -19,12 +19,39 @@ import {
   stepSummary,
   submoduleNote,
 } from './steps'
+import {
+  MOVE_LABELS,
+  REMOVE_LABEL,
+  REPLACE_NO,
+  REPLACE_QUESTION,
+  REPLACE_YES,
+  RESTART_NOTE,
+  fillRefusedToast,
+  legacyBand,
+  legacyCopies,
+  legacyMarkdown,
+  legacyToast,
+  moveSteps,
+  removeStep,
+  sourceOf,
+  stoppedBand,
+  stoppedMarkdown,
+  stoppedToast,
+} from './source-check'
+import type { LegacyCopy, ScopeSettings, Source } from './source-check'
 
 // VeroDiff: snapshot the working tree at both ends of a turn (scripts/snapshot.sh) and
 // draw the diff of each turn in a pane. Snapshots live in a bare repository outside the
 // project; nothing is ever written to its .git.
 
 const PANE = 'vero-diff'
+const PLUGIN = 'vero-diff'
+const DISPLAY = 'VeroDiff'
+// What the move leaves in place, named in the stopped message.
+const KEEPS = "VeroDiff's snapshot history lives in ~/.cache/verodiff"
+// ⚠ is drawn wider than the one cell a terminal gives it and covers the space after it,
+// so it is always followed by two.
+const WARN = '\u26a0  '
 const COMMAND = 'vero-diff'
 const TOOL = 'turn_diff'
 // Whether the person closed the pane, kept across sessions: a closed pane stays closed
@@ -43,6 +70,11 @@ const LIMIT = 200
 const MAX_FILES = 40
 const MAX_INLINE_CHARS = 60000 // `last` lands in the model's context too
 const SNAPSHOT_TIMEOUT_MS = 20000
+// While a copy works, its source is re-read at most this often: another copy appearing
+// beside it mid-session is rare, and the band tells the person to restart anyway. A
+// stopped copy re-reads on every turn, so the old copy's removal is seen at the next Enter.
+const RECHECK_MS = 10_000
+let checkedAt = -Infinity
 
 const INITIAL: View = {
   shadow: '',
@@ -61,10 +93,102 @@ const INITIAL: View = {
   otherSession: '',
   isPaneOpen: false,
   isBandHidden: false,
+  source: { kind: 'dev' },
+  confirmingFill: '',
   error: '',
   isLoading: true,
 }
 const view = atom({ plugin: 'vero-diff', key: 'view' } as const, INITIAL)
+
+// --- the source check ---------------------------------------------------------------
+// VeroDiff works only when installed from VeroPlugins (`vero-plugins`), or as a
+// development copy. Where this copy came from is read off its root; a home copy also
+// looks in the settings for an older copy of itself still enabled under another
+// marketplace, so two copies never act at once. While stopped, every hook returns the
+// engine's own behaviour, the command and the tool answer the move message, and the
+// band holds the buttons that fill the move commands into the prompt box.
+
+// Under `claude plugin test` the root is the plugin's folder, never under plugins/cache.
+// A copy that finds itself `dev` reads VERO_TEST_ROOT and takes its source from that path
+// instead; only a dev copy consults it, so no installed copy can opt out through it.
+async function checkSource($: EngineInterface): Promise<{ source: Source; legacy?: LegacyCopy }> {
+  try {
+    let source = sourceOf($.plugin.root)
+    if (source.kind === 'dev') {
+      const testRoot = await $.env.get('VERO_TEST_ROOT')
+      if (testRoot) source = sourceOf(testRoot)
+    }
+    if (source.kind !== 'home') return { source }
+    const sources: ScopeSettings[] = []
+    for (const scope of ['user', 'project', 'local'] as const) {
+      sources.push({ scope, settings: await $.settings.read({ source: scope }).catch(() => undefined) })
+    }
+    return { source, legacy: legacyCopies(PLUGIN, sources)[0] }
+  } catch {
+    return { source: { kind: 'dev' } }
+  }
+}
+
+function isStopped(v: View): boolean {
+  return v.source.kind === 'foreign' || v.legacy !== undefined
+}
+
+// Reads the source again and keeps the state in step; says whether it is stopped now.
+async function refreshSource($: EngineInterface, isForced: boolean): Promise<boolean> {
+  const was = isStopped(await read($, view))
+  const now = await $.clock.now()
+  if (!isForced && !was && now - checkedAt < RECHECK_MS) return false
+  checkedAt = now
+  const { source, legacy } = await checkSource($)
+  await update($, view, cur => ({ ...cur, source, legacy, confirmingFill: '' }))
+  const stopped = source.kind === 'foreign' || legacy !== undefined
+  if (stopped !== was) $.ui.invalidate('ui.render')
+  return stopped
+}
+
+// The move message: the command's answer, the tool's deny.
+function stoppedMessage(v: View): string {
+  if (v.legacy !== undefined) return legacyMarkdown(DISPLAY, PLUGIN, v.legacy)
+  if (v.source.kind === 'foreign') return stoppedMarkdown(DISPLAY, PLUGIN, v.source.marketplace, KEEPS)
+  return ''
+}
+
+// The commands the band's buttons fill, by button key.
+function moveCommand(v: View, which: string): string | undefined {
+  if (v.legacy !== undefined) return which === 'remove' ? removeStep(PLUGIN, v.legacy) : undefined
+  if (v.source.kind !== 'foreign') return undefined
+  const n = Number(which)
+  return Number.isInteger(n) && n >= 1 && n <= 3 ? moveSteps(PLUGIN, v.source.marketplace)[n - 1] : undefined
+}
+
+// Puts one move command into the prompt box, replacing what is there. Nothing runs by
+// itself: the person presses Enter.
+async function fillMove($: EngineInterface, cmd: string) {
+  try {
+    const filled = await $.prompt.fill({ text: cmd, mode: 'replace' })
+    if (!filled.isFilled) $.ui.toast(fillRefusedToast(DISPLAY))
+  } catch {
+    $.ui.toast(fillRefusedToast(DISPLAY))
+  }
+}
+
+// A press: with a draft in the box, ask first; otherwise fill at once.
+async function pressMove($: EngineInterface, which: string) {
+  const v = await read($, view)
+  const cmd = moveCommand(v, which)
+  if (cmd === undefined) return
+  let draft = ''
+  try {
+    draft = (await $.prompt.read()).text
+  } catch {
+    draft = ''
+  }
+  if (draft.trim() !== '' && draft !== cmd) {
+    await update($, view, cur => ({ ...cur, confirmingFill: cmd }))
+    return
+  }
+  await fillMove($, cmd)
+}
 
 // snapshot.sh is the one place that knows the cache layout: `where` prints the path,
 // `pre`/`post` take a snapshot, `prune` drops stale sessions. It always exits 0.
@@ -336,11 +460,18 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     openTurnAt = undefined
     await update($, view, cur => ({ ...cur, isTurnOpen: false }))
+    const stopped = await refreshSource($, true)
     await $.command.register({
       name: COMMAND,
       description: 'VeroDiff: what changed on each turn (pane, last [N], band, purge)',
       argumentHint: '[last [N] | band | purge]',
     })
+    if (stopped) {
+      // no tool for the model, no snapshots, no prune, no pane: one toast says why
+      const v = await read($, view)
+      $.ui.toast(v.legacy !== undefined ? legacyToast(DISPLAY, v.legacy) : v.source.kind === 'foreign' ? stoppedToast(DISPLAY, v.source.marketplace) : '')
+      return next(e)
+    }
     await $.tool.register({
       name: TOOL,
       description:
@@ -371,7 +502,7 @@ export const register: Register = on => {
   on('session.end', async ($, e, next) => {
     const done = await next(e)
     openTurnAt = undefined
-    await update($, view, cur => ({ ...cur, isTurnOpen: false }))
+    await update($, view, cur => ({ ...cur, isTurnOpen: false, confirmingFill: '' }))
     if (e.reason === 'clear') {
       await update($, view, cur => ({ ...cur, steps: [], files: [], collapsed: [], shownSha: '', latest: undefined, index: 0, error: '' }))
     }
@@ -380,6 +511,8 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
+    // Re-read each turn, so a copy installed or removed mid-session is seen at once.
+    if (await refreshSource($, false)) return next(e)
     const isInsideOpenTurn = openTurnAt !== undefined && Date.now() - openTurnAt < STALE_TURN_MS
     if (!isInsideOpenTurn) {
       openTurnAt = Date.now()
@@ -394,6 +527,7 @@ export const register: Register = on => {
   // step rather than being folded into the next one.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
+    if (isStopped(await read($, view))) return done
     if (e.agentId === undefined) {
       openTurnAt = undefined
       await update($, view, cur => ({ ...cur, isTurnOpen: false }))
@@ -406,6 +540,8 @@ export const register: Register = on => {
 
   // The matcher is a literal: `mcp__<plugin>__<name>` as $.tool.register lists it.
   on('tool.call', { tool: 'mcp__vero-diff__turn_diff' }, async ($, e) => {
+    const v = await read($, view)
+    if (isStopped(v)) return { deny: stoppedMessage(v) }
     const step = (e as { step?: unknown }).step
     const text = await lastDiff($, typeof step === 'number' ? String(step) : '')
 
@@ -413,6 +549,8 @@ export const register: Register = on => {
   }).catch(() => ({ deny: 'VeroDiff could not read the snapshots for that step.' }))
 
   on('command.run', { command: COMMAND }, async ($, e) => {
+    const stoppedView = await read($, view)
+    if (isStopped(stoppedView)) return { text: stoppedMessage(stoppedView) }
     const [sub = '', arg = ''] = e.args.trim().split(/\s+/)
     if (sub === 'last') return { text: await lastDiff($, arg) }
     if (sub === 'purge') return { text: await purge($) }
@@ -427,7 +565,7 @@ export const register: Register = on => {
     await reload($, true)
     await openPane($, true)
 
-    return { text: 'VeroDiff pane opened.' }
+    return { text: '**VeroDiff** - *One turn, one diff.* The pane is open: every turn\'s changes, newest first.' }
   })
 
   // Closed by the person (the desktop's own close mark) or by the Hide button; an unload
@@ -445,29 +583,68 @@ export const register: Register = on => {
   // One row above the prompt: the newest step, and while the pane is closed, a way back to
   // it without typing the command. Out of the way of a survey; nothing with no steps; and
   // once the person closes it with its ×, nothing at all - no row, no trace - until
-  // `/vero-diff band`.
+  // `/vero-diff band`. Other plugins share the band: what the ones beneath draw
+  // (VeroDotto's rows, say) stays, under this row, so no plugin hides another's.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const v = await read($, view)
+    if (e.props.hasSurvey) return next(e)
+    // Stopped: the move row, whatever the person chose for the normal row. No ×.
+    if (isStopped(v)) {
+      const { Box, Text, Button } = $.ui.resolve(e)
+      const below = await next(e)
+      const line = v.legacy !== undefined ? legacyBand(DISPLAY, v.legacy) : v.source.kind === 'foreign' ? stoppedBand(DISPLAY, v.source.marketplace) : ''
+      const buttons = v.legacy !== undefined ? [['remove', REMOVE_LABEL]] : MOVE_LABELS.map((label, i) => [String(i + 1), label])
+      return (
+        <Box flexDirection="column">
+          <Text color="yellow">{line}</Text>
+          {v.confirmingFill !== '' ? (
+            <Box flexDirection="row" gap={1}>
+              <Text>{REPLACE_QUESTION}</Text>
+              <Button key={`${PLUGIN}-move:replace`} onPress={() => void fillMove($, v.confirmingFill).then(() => update($, view, cur => ({ ...cur, confirmingFill: '' })))}>
+                {REPLACE_YES}
+              </Button>
+              <Button key={`${PLUGIN}-move:cancel`} onPress={() => void update($, view, cur => ({ ...cur, confirmingFill: '' }))}>
+                {REPLACE_NO}
+              </Button>
+            </Box>
+          ) : (
+            <Box flexDirection="row" gap={1}>
+              {buttons.map(([which, label]) => (
+                <Button key={`${PLUGIN}-move:${which}`} onPress={() => void pressMove($, which ?? '')}>
+                  {label}
+                </Button>
+              ))}
+              <Text dimColor>{RESTART_NOTE}</Text>
+            </Box>
+          )}
+          {below}
+        </Box>
+      )
+    }
     const latest = v.latest
-    if (e.props.hasSurvey || v.isBandHidden || latest === undefined) return next(e)
+    if (v.isBandHidden || latest === undefined) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
+    const below = await next(e)
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Text dimColor>VeroDiff</Text>
-        <Text>{latest.what}</Text>
-        <Text dimColor>· {latest.count} ·</Text>
-        <Text color="green">+{latest.adds}</Text>
-        <Text color="red">{'\u2212'}{latest.dels}</Text>
-        {v.otherSession !== '' && <Text color="yellow">{'\u26a0'} another session here</Text>}
-        {!v.isPaneOpen && (
-          <Button key="show-diff" dimColor onPress={() => void openPane($, true)}>
-            Show diff
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={1}>
+          <Text dimColor>VeroDiff</Text>
+          <Text>{latest.what}</Text>
+          <Text dimColor>· {latest.count} ·</Text>
+          <Text color="green">+{latest.adds}</Text>
+          <Text color="red">{'\u2212'}{latest.dels}</Text>
+          {v.otherSession !== '' && <Text color="yellow">{WARN}another session here</Text>}
+          {!v.isPaneOpen && (
+            <Button key="show-diff" dimColor onPress={() => void openPane($, true)}>
+              Show diff
+            </Button>
+          )}
+          <Button key="hide-band" plain dimColor role="dismiss" onPress={() => void setBandHidden($, true)}>
+            {'\u00d7'}
           </Button>
-        )}
-        <Button key="hide-band" plain dimColor role="dismiss" onPress={() => void setBandHidden($, true)}>
-          {'\u00d7'}
-        </Button>
+        </Box>
+        {below}
       </Box>
     )
   })
@@ -475,6 +652,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Code } = $.ui.resolve(e)
     const v = await read($, view)
+    if (isStopped(v)) return <Box />
     // The desktop draws its own close mark on the pane; the terminal needs a button.
     const hide = e.surface === 'terminal' && (
       <Button key="hide" hotkey="h" role="dismiss" onPress={() => void closePane($)}>
@@ -590,7 +768,7 @@ export const register: Register = on => {
           </Text>
           {v.otherSession !== '' && (
             <Text color="yellow">
-              {'\u26a0'} Another session is also editing this folder (last change {v.otherSession}) - its edits
+              {WARN}Another session is also editing this folder (last change {v.otherSession}) - its edits
               appear in these diffs. Use a git worktree per session.
             </Text>
           )}

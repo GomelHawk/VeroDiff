@@ -44,18 +44,44 @@ type World = {
   revert?: { check: string; apply: string }
   // what `git for-each-ref` lists of the sessions' refs
   refs?: string
+  // a row another plugin beneath draws in the band (VeroDotto's, say)
+  belowRow?: string
+  // the environment the plugin reads: VERO_TEST_ROOT moves the source check's root
+  env?: Record<string, string>
+  // what each settings scope holds, as `$.settings.read({ source })` answers it
+  settings?: Partial<Record<'user' | 'project' | 'local', unknown>>
+  // what the prompt box holds when a band button reads it
+  draft?: string
+  // whether the prompt box takes a fill
+  fills?: boolean
 }
 
 // Everything beneath the plugin that a session would answer, from memory. Returns what
 // the plugin asked of the world: the panes it opened, the toasts it showed, the commands
 // it ran.
 function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {}) {
-  const seen = { opened: [] as string[], toasts: [] as string[], ran: [] as string[][], filled: [] as string[] }
+  const seen = {
+    opened: [] as string[],
+    toasts: [] as string[],
+    ran: [] as string[][],
+    filled: [] as string[],
+    fillModes: [] as string[],
+    tools: [] as string[],
+  }
   const shadow = world.shadow ?? SHADOW
   mock.store(on, store)
+  const clock = mock.clock(on)
+  // read at each call, so a test can move the root or the settings between two turns
+  on('env.get', ($, e) => ({ value: (world.env ?? {})[e.name] }))
+  on('settings.read', ($, e) => ({ value: (world.settings ?? {})[e.source as 'user'] ?? {} }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__vero-diff__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    seen.tools.push(e.name)
+    return { value: { tool: `mcp__vero-diff__${e.name}` } }
+  })
   on('ui.open', ($, e) => {
     seen.opened.push(e.id)
     return { value: { isPlaced: true } }
@@ -64,11 +90,20 @@ function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {
     seen.toasts.push(e.text)
     return { value: undefined }
   })
+  // what the engine draws above the prompt when no plugin does - an empty row - or the
+  // row of another plugin beneath, where the test has one
+  on('ui.render', { component: 'AbovePrompt' }, () =>
+    world.belowRow === undefined
+      ? { type: 'Box', props: {}, children: [] }
+      : { type: 'Box', props: {}, children: [{ type: 'Text', props: {}, children: [world.belowRow] }] },
+  )
   on('session.id', () => ({ value: 'S1' }))
   on('session.root', () => ({ value: '/repo' }))
-  on('prompt.read', () => ({ value: { text: seen.filled.join(''), cursor: 0 } }))
+  on('prompt.read', () => ({ value: { text: world.draft ?? seen.filled.join(''), cursor: 0 } }))
   on('prompt.fill', ($, e) => {
+    if (world.fills === false) return { isFilled: false, text: world.draft ?? '' }
     seen.filled.push(e.text)
+    seen.fillModes.push(e.mode ?? '')
     return { isFilled: true, text: seen.filled.join('') }
   })
   on('process.run', ($, e) => {
@@ -93,7 +128,7 @@ function fakeWorld(on: On, store: Record<string, unknown> = {}, world: World = {
     }
     return ok('')
   })
-  return seen
+  return { ...seen, clock }
 }
 
 const run = ($: Parameters<TestBody>[0], args: string) =>
@@ -254,10 +289,21 @@ for (const surface of ['terminal', 'desktop'] as const) {
       })
     }
 
+    test('another plugin\'s row in the band stays, under this one', async ($, on) => {
+      fakeWorld(on, {}, { belowRow: 'VeroDotto spec.docx \u2192 markdown' })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
+      expect(await band.find({ type: 'Text', text: 'VeroDotto spec.docx \u2192 markdown' })).toBeDefined()
+      // closing VeroDiff's row leaves the other one
+      await band.press({ key: 'hide-band' })
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeUndefined()
+      expect(await band.find({ type: 'Text', text: 'VeroDotto spec.docx \u2192 markdown' })).toBeDefined()
+    })
+
     test('the band closes without a trace, and /vero-diff band brings it back', async ($, on) => {
       const seen = fakeWorld(on)
-      // what the engine draws above the prompt when no plugin does: an empty row
-      on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', props: {}, children: [] }))
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
       const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
 
@@ -505,8 +551,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
       const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
 
-      expect(await ui.find({ type: 'Text', text: /^\u26a0 Another session is also editing this folder \(last change \d\d:\d\d\)/ })).toBeDefined()
-      expect(await band.find({ type: 'Text', text: '\u26a0 another session here' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /^\u26a0  Another session is also editing this folder \(last change \d\d:\d\d\)/ })).toBeDefined()
+      expect(await band.find({ type: 'Text', text: '\u26a0  another session here' })).toBeDefined()
     })
 
     test('no warning when only this session changed the tree', async ($, on) => {
@@ -516,6 +562,201 @@ for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
 
       expect(await ui.find({ type: 'Text', text: /Another session/ })).toBeUndefined()
+    })
+
+    // --- the source check: a copy from anywhere but VeroPlugins stops and shows the move ---
+
+    const FOREIGN = '/h/.claude/plugins/cache/some-marketplace/vero-diff/1.3.0'
+    const HOME = '/h/.claude/plugins/cache/vero-plugins/vero-diff/1.3.0'
+    const MOVE = [
+      '/plugin marketplace add GomelHawk/VeroPlugins',
+      '/plugin install vero-diff@vero-plugins',
+      '/plugin uninstall vero-diff@some-marketplace',
+    ]
+    const STOPPED =
+      '**VeroDiff is paused.** It was installed from `some-marketplace`; Vero plugins are\n' +
+      'installed only from VeroPlugins. Run these in Claude Code, then restart it:\n\n' +
+      MOVE.map(step => `    ${step}`).join('\n') +
+      "\n\nYour data is kept (VeroDiff's snapshot history lives in ~/.cache/verodiff)."
+    const turn = async ($: Parameters<TestBody>[0], text: string) => {
+      await $.turn.start({ text, turnId: 't1' })
+      await $.turn.complete({ turnId: 't1', reason: 'answer', answer: 'done', durationMs: 1, isAborted: false } as never)
+    }
+
+    test('a foreign copy does no work: no snapshots, no tool, no pane, one toast', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: FOREIGN } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      await turn($, 'edit a file')
+
+      expect(seen.ran).toEqual([]) // snapshot.sh and git never run
+      expect(seen.tools).toEqual([])
+      expect(seen.opened).toEqual([])
+      expect(seen.toasts).toEqual([
+        'VeroDiff is paused: installed from some-marketplace. See the band above the prompt to move it to VeroPlugins.',
+      ])
+      const pane = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'Pane', props: PROPS, requestId: 'vero-diff' })
+      expect((await pane.findAll({ type: 'Text' })).length).toBe(0)
+    })
+
+    test('a foreign copy answers its command and its tool with the move message', async ($, on) => {
+      fakeWorld(on, {}, { env: { VERO_TEST_ROOT: FOREIGN } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+
+      expect((await run($, '')).text).toBe(STOPPED)
+      expect((await run($, 'last')).text).toBe(STOPPED)
+      expect((await run($, 'purge')).text).toBe(STOPPED)
+      const called = await $.tool.call({ tool: 'mcp__vero-diff__turn_diff', step: 1 } as never)
+      expect((called as { deny?: string }).deny).toBe(STOPPED)
+    })
+
+    test('a foreign copy draws the move row with three buttons and no ×, even with the band closed', async ($, on) => {
+      fakeWorld(on, { isBandHidden: true }, { env: { VERO_TEST_ROOT: FOREIGN }, belowRow: 'VeroDotto spec.docx → markdown' })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(
+        await band.find({
+          type: 'Text',
+          text: '⛔ VeroDiff is paused - it was installed from some-marketplace. Vero plugins install only from VeroPlugins.',
+        }),
+      ).toBeDefined()
+      expect((await band.find({ key: 'vero-diff-move:1' }))?.text).toBe('1 ↓ Add VeroPlugins')
+      expect((await band.find({ key: 'vero-diff-move:2' }))?.text).toBe('2 ↓ Install from VeroPlugins')
+      expect((await band.find({ key: 'vero-diff-move:3' }))?.text).toBe('3 ↓ Remove this copy')
+      expect(await band.find({ type: 'Text', text: 'then restart Claude Code' })).toBeDefined()
+      expect(await band.find({ key: 'hide-band' })).toBeUndefined()
+      expect(await band.find({ key: 'show-diff' })).toBeUndefined()
+      // the other plugin's row stays beneath
+      expect(await band.find({ type: 'Text', text: 'VeroDotto spec.docx → markdown' })).toBeDefined()
+    })
+
+    test('each move button fills exactly its command, replacing the box, and runs nothing', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: FOREIGN } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      for (const n of [1, 2, 3]) {
+        seen.filled.length = 0
+        await band.press({ key: `vero-diff-move:${n}` })
+        expect(seen.filled).toEqual([MOVE[n - 1]])
+      }
+      expect(seen.fillModes).toEqual(['replace', 'replace', 'replace'])
+      expect(seen.ran).toEqual([])
+      expect(await band.find({ type: 'Text', text: 'Replace your draft?' })).toBeUndefined()
+    })
+
+    test('with a draft in the box a button asks first: Replace fills, Cancel does not', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: FOREIGN }, draft: 'half a question' })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      await band.press({ key: 'vero-diff-move:2' })
+      expect(seen.filled).toEqual([])
+      expect(await band.find({ type: 'Text', text: 'Replace your draft?' })).toBeDefined()
+      expect(await band.find({ key: 'vero-diff-move:2' })).toBeUndefined()
+      await band.press({ key: 'vero-diff-move:cancel' })
+      expect(seen.filled).toEqual([])
+      expect(await band.find({ key: 'vero-diff-move:2' })).toBeDefined()
+
+      await band.press({ key: 'vero-diff-move:2' })
+      await band.press({ key: 'vero-diff-move:replace' })
+      expect(seen.filled).toEqual([MOVE[1]])
+      expect(await band.find({ type: 'Text', text: 'Replace your draft?' })).toBeUndefined()
+    })
+
+    test('a fill the prompt box refuses is said in a toast', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: FOREIGN }, fills: false })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      await band.press({ key: 'vero-diff-move:1' })
+      expect(seen.filled).toEqual([])
+      expect(seen.toasts[1]).toBe('VeroDiff: close the dialog and press the button again.')
+    })
+
+    test('once the copy is moved, the next turn resumes normal work in the same session', async ($, on) => {
+      const world: World = { env: { VERO_TEST_ROOT: FOREIGN } }
+      const seen = fakeWorld(on, {}, world)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+      expect(await band.find({ key: 'vero-diff-move:1' })).toBeDefined()
+
+      world.env = {} // a development copy again: works as always
+      await turn($, 'edit a file')
+      expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'pre')).toBe(true)
+      expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'post')).toBe(true)
+      expect(await band.find({ key: 'vero-diff-move:1' })).toBeUndefined()
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
+      expect((await run($, 'last')).text?.startsWith('**turn 2')).toBe(true)
+    })
+
+    test('a home copy beside an old copy of itself pauses and offers to remove the old one', async ($, on) => {
+      const world: World = { env: { VERO_TEST_ROOT: HOME }, settings: { user: { enabledPlugins: { 'vero-diff@old-place': true, 'vero-diff@vero-plugins': true } } } }
+      const seen = fakeWorld(on, {}, world)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(seen.toasts).toEqual(['VeroDiff is paused: an old copy from old-place is still installed. See the band above the prompt.'])
+      expect(
+        await band.find({ type: 'Text', text: '⛔ VeroDiff is paused - an old copy from old-place is still installed. Remove it, then restart.' }),
+      ).toBeDefined()
+      expect((await band.find({ key: 'vero-diff-move:remove' }))?.text).toBe('↓ Remove the old copy')
+      expect(await band.find({ key: 'vero-diff-move:1' })).toBeUndefined()
+      await band.press({ key: 'vero-diff-move:remove' })
+      expect(seen.filled).toEqual(['/plugin uninstall vero-diff@old-place'])
+      expect((await run($, '')).text).toBe(
+        '**VeroDiff is paused.** An old copy from `old-place` is still installed, and two\n' +
+          'copies must never act together. Run this in Claude Code, then restart it:\n\n' +
+          '    /plugin uninstall vero-diff@old-place',
+      )
+      await turn($, 'edit a file')
+      expect(seen.ran).toEqual([])
+
+      // the old copy is gone: the next turn works as always
+      world.settings = { user: { enabledPlugins: { 'vero-diff@vero-plugins': true } } }
+      await turn($, 'edit a file')
+      expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'pre')).toBe(true)
+      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeUndefined()
+    })
+
+    test('an old copy enabled for one project is removed at that scope', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: HOME }, settings: { project: { enabledPlugins: { 'vero-diff@old-place': true } } } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      await band.press({ key: 'vero-diff-move:remove' })
+      expect(seen.filled).toEqual(['/plugin uninstall vero-diff@old-place --scope project'])
+    })
+
+    test('a home copy with no old copy works as always', async ($, on) => {
+      const seen = fakeWorld(on, {}, { env: { VERO_TEST_ROOT: HOME }, settings: { user: { enabledPlugins: { 'vero-diff@vero-plugins': true } } } })
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      expect(seen.tools).toEqual(['turn_diff'])
+      expect(await band.find({ type: 'Text', text: 'turn 2' })).toBeDefined()
+      expect(seen.toasts).toEqual([])
+    })
+
+    test('a working copy re-reads its source at most every 10 seconds', async ($, on) => {
+      const world: World = { env: { VERO_TEST_ROOT: HOME }, settings: { user: { enabledPlugins: { 'vero-diff@vero-plugins': true } } } }
+      const seen = fakeWorld(on, {}, world)
+      await $.session.start({ cwd: '/repo', surface, isInteractive: true })
+      const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
+
+      // an old copy appears right away: not looked for yet, so the turn works as always
+      world.settings = { user: { enabledPlugins: { 'vero-diff@old-place': true, 'vero-diff@vero-plugins': true } } }
+      await seen.clock.advance(9_000)
+      await turn($, 'edit a file')
+      expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'pre')).toBe(true)
+      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeUndefined()
+
+      // ten seconds on: looked for, found, and the copy pauses
+      await seen.clock.advance(1_000)
+      const before = seen.ran.length
+      await turn($, 'edit again')
+      expect(seen.ran.length).toBe(before)
+      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeDefined()
     })
 
     test('Hide is drawn on the terminal only', async ($, on) => {

@@ -64,6 +64,14 @@ export type View = {
   isPaneOpen: boolean
   // whether the person closed the band; then it draws nothing until `/vero-diff band`
   isBandHidden: boolean
+  // where this copy was installed from: home is VeroPlugins, dev a --plugin-dir folder,
+  // foreign any other marketplace - then the plugin is stopped and shows how to move
+  source: { kind: 'home' } | { kind: 'dev' } | { kind: 'foreign'; marketplace: string }
+  // an older copy of this plugin still enabled under another marketplace; present, the
+  // plugin is stopped until it is removed
+  legacy?: { marketplace: string; scope: 'user' | 'project' | 'local' }
+  // the move command waiting for "Replace your draft?"; '' for none
+  confirmingFill: string
   error: string
   isLoading: boolean
 }

@@ -34,8 +34,7 @@ for f in install.sh uninstall.sh plugins/vero-diff/scripts/snapshot.sh; do
   fi
 done
 
-for f in .claude-plugin/marketplace.json plugins/vero-diff/.claude-plugin/plugin.json \
-         plugins/vero-diff/hooks/hooks.json; do
+for f in plugins/vero-diff/.claude-plugin/plugin.json plugins/vero-diff/hooks/hooks.json; do
   if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$ROOT/$f" 2>/dev/null; then
     ok "valid JSON: $f"
   else
@@ -82,6 +81,23 @@ for f in README.md LICENSE; do
   cmp -s <(tr -d '\r' < "$ROOT/$f") <(tr -d '\r' < "$ROOT/plugins/vero-diff/$f") && ok "$f is the same in the plugin" \
     || no "$f is the same in the plugin" "edit both, or copy one over the other"
 done
+
+# VeroPlugins is the only marketplace: this repository publishes no catalog of its own,
+# every copy carries the shared source check, and nothing names another marketplace.
+[ ! -e "$ROOT/.claude-plugin/marketplace.json" ] && ok "no marketplace.json at the root" \
+  || no "no marketplace.json at the root" "VeroPlugins is the only marketplace"
+for f in plugins/vero-diff/hooks/source-check.ts plugins/vero-diff/tests/source-check.test.ts; do
+  [ -f "$ROOT/$f" ] && ok "present: $f" || no "present: $f" "copy it from VeroPlugins/shared"
+done
+grep -q 'GomelHawk/VeroPlugins' "$ROOT/install.sh" && grep -q 'vero-plugins' "$ROOT/install.sh" \
+  && ok "install.sh installs from VeroPlugins" || no "install.sh installs from VeroPlugins"
+# (the pattern is assembled so this script does not name them itself)
+OTHERS="verodiff-market""place|gomelhawk-plug""ins"
+if grep -rqE "$OTHERS" --exclude-dir=.git "$ROOT"; then
+  no "no other marketplace is named" "$(grep -rlE "$OTHERS" --exclude-dir=.git "$ROOT" | head -3 | tr '\n' ' ')"
+else
+  ok "no other marketplace is named"
+fi
 
 # claude.ai organization distribution rejects a plugin with a top-level bin/.
 [ ! -e "$ROOT/plugins/vero-diff/bin" ] && ok "no top-level bin/ in the plugin" \
