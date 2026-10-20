@@ -63,7 +63,7 @@ To check it took, type `/vero-diff`: the command is in the list, and running it 
 VeroDiff panel.
 
 **Only from VeroPlugins.** VeroDiff works only when installed from VeroPlugins. A copy
-installed from anywhere else pauses and shows, above the prompt, three buttons that move
+installed from anywhere else pauses and shows, above the prompt, four buttons that move
 it here: press them one after another, pressing Enter after each, then restart Claude
 Code. Your history of changes is still there afterwards.
 

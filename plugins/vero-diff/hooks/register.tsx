@@ -21,7 +21,7 @@ import {
 } from './steps'
 import {
   MOVE_LABELS,
-  REMOVE_LABEL,
+  REMOVE_LABELS,
   REPLACE_NO,
   REPLACE_QUESTION,
   REPLACE_YES,
@@ -32,7 +32,7 @@ import {
   legacyMarkdown,
   legacyToast,
   moveSteps,
-  removeStep,
+  removeSteps,
   sourceOf,
   stoppedBand,
   stoppedMarkdown,
@@ -155,10 +155,10 @@ function stoppedMessage(v: View): string {
 
 // The commands the band's buttons fill, by button key.
 function moveCommand(v: View, which: string): string | undefined {
-  if (v.legacy !== undefined) return which === 'remove' ? removeStep(PLUGIN, v.legacy) : undefined
-  if (v.source.kind !== 'foreign') return undefined
-  const n = Number(which)
-  return Number.isInteger(n) && n >= 1 && n <= 3 ? moveSteps(PLUGIN, v.source.marketplace)[n - 1] : undefined
+  // `remove-N` while paused by an old copy, `N` while foreign; anything else is nothing.
+  const steps = v.legacy !== undefined ? removeSteps(PLUGIN, v.legacy) : v.source.kind === 'foreign' ? moveSteps(PLUGIN, v.source.marketplace) : []
+  const n = Number(v.legacy !== undefined ? which.replace(/^remove-/, '') : which)
+  return Number.isInteger(n) && n >= 1 && n <= steps.length ? steps[n - 1] : undefined
 }
 
 // Puts one move command into the prompt box, replacing what is there. Nothing runs by
@@ -593,7 +593,7 @@ export const register: Register = on => {
       const { Box, Text, Button } = $.ui.resolve(e)
       const below = await next(e)
       const line = v.legacy !== undefined ? legacyBand(DISPLAY, v.legacy) : v.source.kind === 'foreign' ? stoppedBand(DISPLAY, v.source.marketplace) : ''
-      const buttons = v.legacy !== undefined ? [['remove', REMOVE_LABEL]] : MOVE_LABELS.map((label, i) => [String(i + 1), label])
+      const buttons = v.legacy !== undefined ? REMOVE_LABELS.map((label, i) => [`remove-${i + 1}`, label]) : MOVE_LABELS.map((label, i) => [String(i + 1), label])
       return (
         <Box flexDirection="column">
           <Text color="yellow">{line}</Text>

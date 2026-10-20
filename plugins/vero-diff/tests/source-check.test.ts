@@ -4,7 +4,7 @@ import {
   HOME_MARKETPLACE,
   HOME_REPO,
   MOVE_LABELS,
-  REMOVE_LABEL,
+  REMOVE_LABELS,
   REPLACE_NO,
   REPLACE_QUESTION,
   REPLACE_YES,
@@ -16,7 +16,7 @@ import {
   legacyToast,
   marketplaceOf,
   moveSteps,
-  removeStep,
+  removeSteps,
   sourceOf,
   stoppedBand,
   stoppedMarkdown,
@@ -99,18 +99,25 @@ describe('sourceOf', () => {
 })
 
 describe('the move', () => {
-  test('is three commands, in order', () => {
+  test('is four commands, in order', () => {
     expect(moveSteps('vero-diff', 'old-marketplace')).toEqual([
       '/plugin marketplace add GomelHawk/VeroPlugins',
       '/plugin install vero-diff@vero-plugins',
       '/plugin uninstall vero-diff@old-marketplace',
+      '/plugin marketplace remove old-marketplace',
     ])
-    expect(moveSteps('vero-runto', 'a-fork')[2]).toBe('/plugin uninstall vero-runto@a-fork')
+    expect(moveSteps('vero-runto', 'a-fork').slice(2)).toEqual(['/plugin uninstall vero-runto@a-fork', '/plugin marketplace remove a-fork'])
   })
-  test('an old copy is removed at the scope it was enabled in', () => {
-    expect(removeStep('vero-diff', { marketplace: 'old-marketplace', scope: 'user' })).toBe('/plugin uninstall vero-diff@old-marketplace')
-    expect(removeStep('vero-diff', { marketplace: 'old-marketplace', scope: 'project' })).toBe('/plugin uninstall vero-diff@old-marketplace --scope project')
-    expect(removeStep('vero-dotto', { marketplace: 'mirror', scope: 'local' })).toBe('/plugin uninstall vero-dotto@mirror --scope local')
+  test('an old copy is removed at the scope it was enabled in, then its marketplace everywhere', () => {
+    expect(removeSteps('vero-diff', { marketplace: 'old-marketplace', scope: 'user' })).toEqual([
+      '/plugin uninstall vero-diff@old-marketplace',
+      '/plugin marketplace remove old-marketplace',
+    ])
+    expect(removeSteps('vero-diff', { marketplace: 'old-marketplace', scope: 'project' })).toEqual([
+      '/plugin uninstall vero-diff@old-marketplace --scope project',
+      '/plugin marketplace remove old-marketplace',
+    ])
+    expect(removeSteps('vero-dotto', { marketplace: 'mirror', scope: 'local' })[0]).toBe('/plugin uninstall vero-dotto@mirror --scope local')
   })
 })
 
@@ -126,8 +133,8 @@ describe('the texts', () => {
     )
   })
   test('the buttons and the notes', () => {
-    expect([...MOVE_LABELS]).toEqual(['1 ↓ Add VeroPlugins', '2 ↓ Install from VeroPlugins', '3 ↓ Remove this copy'])
-    expect(REMOVE_LABEL).toBe('↓ Remove the old copy')
+    expect([...MOVE_LABELS]).toEqual(['1 ↓ Add VeroPlugins', '2 ↓ Install from VeroPlugins', '3 ↓ Remove this copy', '4 ↓ Remove the old marketplace'])
+    expect([...REMOVE_LABELS]).toEqual(['1 ↓ Remove the old copy', '2 ↓ Remove the old marketplace'])
     expect(RESTART_NOTE).toBe('then restart Claude Code')
     expect([REPLACE_QUESTION, REPLACE_YES, REPLACE_NO]).toEqual(['Replace your draft?', 'Replace', 'Cancel'])
     expect(fillRefusedToast('VeroRunto')).toBe('VeroRunto: close the dialog and press the button again.')
@@ -151,6 +158,7 @@ describe('the texts', () => {
         '    /plugin marketplace add GomelHawk/VeroPlugins',
         '    /plugin install vero-diff@vero-plugins',
         '    /plugin uninstall vero-diff@old-marketplace',
+        '    /plugin marketplace remove old-marketplace',
         '',
         "Your data is kept (VeroDiff's snapshot history lives in ~/.cache/verodiff).",
       ].join('\n'),
@@ -165,6 +173,7 @@ describe('the texts', () => {
         '    /plugin marketplace add GomelHawk/VeroPlugins',
         '    /plugin install vero-runto@vero-plugins',
         '    /plugin uninstall vero-runto@a-fork',
+        '    /plugin marketplace remove a-fork',
       ].join('\n'),
     )
   })
@@ -172,9 +181,10 @@ describe('the texts', () => {
     expect(legacyMarkdown('VeroDiff', 'vero-diff', { marketplace: 'old-marketplace', scope: 'project' })).toBe(
       [
         '**VeroDiff is paused.** An old copy from `old-marketplace` is still installed, and two',
-        'copies must never act together. Run this in Claude Code, then restart it:',
+        'copies must never act together. Run these in Claude Code, then restart it:',
         '',
         '    /plugin uninstall vero-diff@old-marketplace --scope project',
+        '    /plugin marketplace remove old-marketplace',
       ].join('\n'),
     )
   })

@@ -7,6 +7,11 @@
 // as a development copy (--plugin-dir, CLAUDE_CODE_PLUGIN_DIRS, claude plugin test). A
 // copy from any other marketplace is "foreign": it stops, and shows the person the
 // commands that move it. There is no opt-out, by the owner's decision.
+//
+// The engine loads one hooks module per plugin name: of two enabled copies, the one whose
+// `enabledPlugins` key comes first (a managed scope before all) runs and the other is
+// skipped. So while an old copy is enabled, the old copy is the one that shows the move;
+// the home copy's `legacyCopies` check covers the other order only.
 
 export const HOME_MARKETPLACE = 'vero-plugins'
 export const HOME_REPO = 'GomelHawk/VeroPlugins'
@@ -58,27 +63,30 @@ export function sourceOf(root: string, provenance?: string): Source {
   return { kind: 'foreign', marketplace }
 }
 
-// The three commands that move a foreign copy, in the order the person runs them. The
-// new copy is active after the second; the old one keeps showing the band until the third.
+// The four commands that move a foreign copy, in the order the person runs them. The new
+// copy runs once the third has removed this one and Claude Code has restarted; the fourth
+// removes the marketplace this copy came from, so nothing of it stays behind.
 export function moveSteps(plugin: string, from: string): string[] {
   return [
     `/plugin marketplace add ${HOME_REPO}`,
     `/plugin install ${plugin}@${HOME_MARKETPLACE}`,
     `/plugin uninstall ${plugin}@${from}`,
+    `/plugin marketplace remove ${from}`,
   ]
 }
 
-// The command that removes an old copy found enabled in the settings. A copy enabled at
-// project or local scope must be removed at that scope, in that project.
-export function removeStep(plugin: string, copy: LegacyCopy): string {
+// The two commands that remove an old copy found enabled in the settings, and then its
+// marketplace. A copy enabled at project or local scope must be removed at that scope, in
+// that project; the marketplace is removed from every scope.
+export function removeSteps(plugin: string, copy: LegacyCopy): string[] {
   const scope = copy.scope === 'user' ? '' : ` --scope ${copy.scope}`
-  return `/plugin uninstall ${plugin}@${copy.marketplace}${scope}`
+  return [`/plugin uninstall ${plugin}@${copy.marketplace}${scope}`, `/plugin marketplace remove ${copy.marketplace}`]
 }
 
-// The band's buttons, in `moveSteps` order, and the note after them. Keys are the
-// plugin's own; these are the labels every plugin draws.
-export const MOVE_LABELS = ['1 ↓ Add VeroPlugins', '2 ↓ Install from VeroPlugins', '3 ↓ Remove this copy'] as const
-export const REMOVE_LABEL = '↓ Remove the old copy'
+// The band's buttons, in `moveSteps` / `removeSteps` order, and the note after them. Keys
+// are the plugin's own; these are the labels every plugin draws.
+export const MOVE_LABELS = ['1 ↓ Add VeroPlugins', '2 ↓ Install from VeroPlugins', '3 ↓ Remove this copy', '4 ↓ Remove the old marketplace'] as const
+export const REMOVE_LABELS = ['1 ↓ Remove the old copy', '2 ↓ Remove the old marketplace'] as const
 export const RESTART_NOTE = 'then restart Claude Code'
 
 // The question a button asks before replacing a draft in the prompt box, and its answers.
@@ -128,10 +136,13 @@ export function stoppedMarkdown(displayName: string, plugin: string, from: strin
 
 // The message of a home copy paused by an old copy of itself.
 export function legacyMarkdown(displayName: string, plugin: string, copy: LegacyCopy): string {
+  const steps = removeSteps(plugin, copy)
+    .map(step => `    ${step}`)
+    .join('\n')
   return (
     `**${displayName} is paused.** An old copy from \`${copy.marketplace}\` is still installed, and two\n` +
-    `copies must never act together. Run this in Claude Code, then restart it:\n\n` +
-    `    ${removeStep(plugin, copy)}`
+    `copies must never act together. Run these in Claude Code, then restart it:\n\n` +
+    steps
   )
 }
 

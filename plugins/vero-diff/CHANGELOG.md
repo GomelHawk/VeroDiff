@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1 - 2026-10-20
+
+### Changed
+
+- **The move row has four buttons.** After the old copy is removed, a fourth button
+  removes the marketplace it came from, so nothing of it stays behind. A copy from
+  VeroPlugins that finds an older copy of itself offers the same two removals.
+- **Copies installed before VeroPlugins receive this release too**, and show the move row.
+
 ## 1.3.0 - 2026-10-19
 
 VeroDiff now comes from VeroPlugins, the one place every Vero plugin is installed from.

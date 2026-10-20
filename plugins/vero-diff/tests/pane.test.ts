@@ -572,6 +572,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       '/plugin marketplace add GomelHawk/VeroPlugins',
       '/plugin install vero-diff@vero-plugins',
       '/plugin uninstall vero-diff@some-marketplace',
+      '/plugin marketplace remove some-marketplace',
     ]
     const STOPPED =
       '**VeroDiff is paused.** It was installed from `some-marketplace`; Vero plugins are\n' +
@@ -609,7 +610,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect((called as { deny?: string }).deny).toBe(STOPPED)
     })
 
-    test('a foreign copy draws the move row with three buttons and no ×, even with the band closed', async ($, on) => {
+    test('a foreign copy draws the move row with four buttons and no ×, even with the band closed', async ($, on) => {
       fakeWorld(on, { isBandHidden: true }, { env: { VERO_TEST_ROOT: FOREIGN }, belowRow: 'VeroDotto spec.docx → markdown' })
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
       const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
@@ -623,6 +624,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect((await band.find({ key: 'vero-diff-move:1' }))?.text).toBe('1 ↓ Add VeroPlugins')
       expect((await band.find({ key: 'vero-diff-move:2' }))?.text).toBe('2 ↓ Install from VeroPlugins')
       expect((await band.find({ key: 'vero-diff-move:3' }))?.text).toBe('3 ↓ Remove this copy')
+      expect((await band.find({ key: 'vero-diff-move:4' }))?.text).toBe('4 ↓ Remove the old marketplace')
+      expect((await band.findAll({ type: 'Button' })).length).toBe(4)
       expect(await band.find({ type: 'Text', text: 'then restart Claude Code' })).toBeDefined()
       expect(await band.find({ key: 'hide-band' })).toBeUndefined()
       expect(await band.find({ key: 'show-diff' })).toBeUndefined()
@@ -635,12 +638,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
       const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
 
-      for (const n of [1, 2, 3]) {
+      for (const n of [1, 2, 3, 4]) {
         seen.filled.length = 0
         await band.press({ key: `vero-diff-move:${n}` })
         expect(seen.filled).toEqual([MOVE[n - 1]])
       }
-      expect(seen.fillModes).toEqual(['replace', 'replace', 'replace'])
+      expect(seen.fillModes).toEqual(['replace', 'replace', 'replace', 'replace'])
       expect(seen.ran).toEqual([])
       expect(await band.find({ type: 'Text', text: 'Replace your draft?' })).toBeUndefined()
     })
@@ -690,7 +693,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect((await run($, 'last')).text?.startsWith('**turn 2')).toBe(true)
     })
 
-    test('a home copy beside an old copy of itself pauses and offers to remove the old one', async ($, on) => {
+    test('a home copy beside an old copy of itself pauses and offers to remove the old one and its marketplace', async ($, on) => {
       const world: World = { env: { VERO_TEST_ROOT: HOME }, settings: { user: { enabledPlugins: { 'vero-diff@old-place': true, 'vero-diff@vero-plugins': true } } } }
       const seen = fakeWorld(on, {}, world)
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
@@ -700,14 +703,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(
         await band.find({ type: 'Text', text: '⛔ VeroDiff is paused - an old copy from old-place is still installed. Remove it, then restart.' }),
       ).toBeDefined()
-      expect((await band.find({ key: 'vero-diff-move:remove' }))?.text).toBe('↓ Remove the old copy')
+      expect((await band.find({ key: 'vero-diff-move:remove-1' }))?.text).toBe('1 ↓ Remove the old copy')
+      expect((await band.find({ key: 'vero-diff-move:remove-2' }))?.text).toBe('2 ↓ Remove the old marketplace')
+      expect((await band.findAll({ type: 'Button' })).length).toBe(2)
       expect(await band.find({ key: 'vero-diff-move:1' })).toBeUndefined()
-      await band.press({ key: 'vero-diff-move:remove' })
+      await band.press({ key: 'vero-diff-move:remove-1' })
       expect(seen.filled).toEqual(['/plugin uninstall vero-diff@old-place'])
+      seen.filled.length = 0 // Enter ran it: the box is empty again
+      await band.press({ key: 'vero-diff-move:remove-2' })
+      expect(seen.filled).toEqual(['/plugin marketplace remove old-place'])
       expect((await run($, '')).text).toBe(
         '**VeroDiff is paused.** An old copy from `old-place` is still installed, and two\n' +
-          'copies must never act together. Run this in Claude Code, then restart it:\n\n' +
-          '    /plugin uninstall vero-diff@old-place',
+          'copies must never act together. Run these in Claude Code, then restart it:\n\n' +
+          '    /plugin uninstall vero-diff@old-place\n' +
+          '    /plugin marketplace remove old-place',
       )
       await turn($, 'edit a file')
       expect(seen.ran).toEqual([])
@@ -716,7 +725,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       world.settings = { user: { enabledPlugins: { 'vero-diff@vero-plugins': true } } }
       await turn($, 'edit a file')
       expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'pre')).toBe(true)
-      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeUndefined()
+      expect(await band.find({ key: 'vero-diff-move:remove-1' })).toBeUndefined()
     })
 
     test('an old copy enabled for one project is removed at that scope', async ($, on) => {
@@ -724,7 +733,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       await $.session.start({ cwd: '/repo', surface, isInteractive: true })
       const band = await $.ui.mount({ plugin: 'vero-diff', surface, component: 'AbovePrompt', props: BAND })
 
-      await band.press({ key: 'vero-diff-move:remove' })
+      await band.press({ key: 'vero-diff-move:remove-1' })
       expect(seen.filled).toEqual(['/plugin uninstall vero-diff@old-place --scope project'])
     })
 
@@ -749,14 +758,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
       await seen.clock.advance(9_000)
       await turn($, 'edit a file')
       expect(seen.ran.some(argv => argv[0] === 'bash' && argv[2] === 'pre')).toBe(true)
-      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeUndefined()
+      expect(await band.find({ key: 'vero-diff-move:remove-1' })).toBeUndefined()
 
       // ten seconds on: looked for, found, and the copy pauses
       await seen.clock.advance(1_000)
       const before = seen.ran.length
       await turn($, 'edit again')
       expect(seen.ran.length).toBe(before)
-      expect(await band.find({ key: 'vero-diff-move:remove' })).toBeDefined()
+      expect(await band.find({ key: 'vero-diff-move:remove-1' })).toBeDefined()
     })
 
     test('Hide is drawn on the terminal only', async ($, on) => {

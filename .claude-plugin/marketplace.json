@@ -1,0 +1,21 @@
+{
+  "name": "verodiff-marketplace",
+  "description": "VeroDiff is installed from VeroPlugins (GomelHawk/VeroPlugins). This listing stays only so earlier installs receive the move.",
+  "owner": {
+    "name": "Dmitry Koshelenko",
+    "url": "https://github.com/GomelHawk"
+  },
+  "plugins": [
+    {
+      "name": "vero-diff",
+      "source": "./plugins/vero-diff",
+      "description": "One turn, one diff. Install from VeroPlugins: a copy from here pauses and shows the commands that move it.",
+      "category": "productivity",
+      "tags": [
+        "git",
+        "diff",
+        "review"
+      ]
+    }
+  ]
+}

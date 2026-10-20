@@ -32,9 +32,13 @@ jobs:
           claude --version
 
       # `claude plugin validate` reads local files only - no account, no API key. The
-      # catalog this plugin is listed in is VeroPlugins; there is none here to validate.
+      # catalog this plugin is listed in is VeroPlugins; the marketplace file here is the
+      # temporary one (CLAUDE.md, "The temporary marketplace file").
       - name: Validate the plugin manifest, hooks module and state contract
         run: claude plugin validate ./plugins/vero-diff
+
+      - name: Validate the temporary marketplace file
+        run: claude plugin validate .
 
       - name: Validate again, warnings as errors
         run: claude plugin validate ./plugins/vero-diff --strict

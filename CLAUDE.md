@@ -43,10 +43,23 @@ Repository `GomelHawk/VeroDiff`, plugin `vero-diff`, display name `VeroDiff`, co
 one catalog for every Vero plugin; that repository's CLAUDE.md has the catalog rules and
 the canonical source check, and its STANDARD.md the rules every Vero plugin follows.
 
+**The temporary marketplace file.** `.claude-plugin/marketplace.json` (name
+`verodiff-marketplace`, one entry, `./plugins/vero-diff`) is the marketplace VeroDiff had
+before VeroPlugins, kept for a while and nothing more: Claude Code loads one hooks module
+per plugin name, the copy whose `enabledPlugins` key comes first, so a person who
+installed from the old marketplace runs that copy and never the VeroPlugins one while it
+is enabled. Only a release through the old marketplace can show them the move row. The
+file stays for releases 1.3.1 and 1.3.2; the release after deletes it, together with the
+`vero-diff` line in VeroPlugins' `scripts/check-entries.sh` `legacy_marketplace()`,
+whose CI fails until both are gone. Its descriptions point at VeroPlugins; no README, no
+message and no module names the old marketplace, so nothing visible says how to install
+from it.
+
 ## Repository layout
 
 ```
 VeroDiff/                                  the plugin's repository (the catalog is VeroPlugins)
+├── .claude-plugin/marketplace.json        temporary: the old marketplace, so earlier installs get the move (see above)
 ├── .gitattributes                         forces LF: snapshot.sh and the scripts are bash
 ├── .github/workflows/ci.yml               manifests + plugin test, shell lint, smoke, endings
 ├── .github/workflows/release.yml          a v* tag tells VeroPlugins' CI to re-check the entry
@@ -213,10 +226,10 @@ old copy's removal is seen at the next Enter, and at most every 10 s (`RECHECK_M
 `$.clock.now()`) while working - kept in `view.source` and `view.legacy`. While stopped (`isStopped()`): no snapshots, no `$.tool.register`, no
 prune, no pane (the pane hook draws an empty Box), the command and the tool answer the
 move message (`stoppedMarkdown` / `legacyMarkdown`), one toast at `session.start`, and
-the band draws the stopped row whatever `isBandHidden` says: `stoppedBand` with three
-buttons (`vero-diff-move:1..3`, `MOVE_LABELS`) that fill `moveSteps()` into the prompt
-box with `$.prompt.fill({ mode: 'replace' })`, or `legacyBand` with one
-(`vero-diff-move:remove`, `removeStep()`), then `RESTART_NOTE`; no ×. A draft in the box
+the band draws the stopped row whatever `isBandHidden` says: `stoppedBand` with four
+buttons (`vero-diff-move:1..4`, `MOVE_LABELS`) that fill `moveSteps()` into the prompt
+box with `$.prompt.fill({ mode: 'replace' })`, or `legacyBand` with two
+(`vero-diff-move:remove-1..2`, `removeSteps()`), then `RESTART_NOTE`; no ×. A draft in the box
 is asked about first (`view.confirmingFill`, `REPLACE_QUESTION`, keys `:replace` /
 `:cancel`); a refused fill toasts `fillRefusedToast`. Nothing runs by itself, and the
 snapshot cache is never touched while stopped.
