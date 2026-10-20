@@ -50,8 +50,9 @@ per plugin name, the copy whose `enabledPlugins` key comes first, so a person wh
 installed from the old marketplace runs that copy and never the VeroPlugins one while it
 is enabled. Only a release through the old marketplace can show them the move row. The
 file stays for releases 1.3.1 and 1.3.2; the release after deletes it, together with the
-`vero-diff` line in VeroPlugins' `scripts/check-entries.sh` `legacy_marketplace()`,
-whose CI fails until both are gone. Its descriptions point at VeroPlugins; no README, no
+exception in `tests/smoke.sh` (`LEGACY`), the `Validate the temporary marketplace file`
+step in `ci.yml`, and the `vero-diff` line in VeroPlugins' `scripts/check-entries.sh`
+`legacy_marketplace()`, whose CI fails until the file and the line are gone together. Its descriptions point at VeroPlugins; no README, no
 message and no module names the old marketplace, so nothing visible says how to install
 from it.
 

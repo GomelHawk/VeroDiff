@@ -84,19 +84,32 @@ done
 
 # VeroPlugins is the only marketplace: this repository publishes no catalog of its own,
 # every copy carries the shared source check, and nothing names another marketplace.
-[ ! -e "$ROOT/.claude-plugin/marketplace.json" ] && ok "no marketplace.json at the root" \
-  || no "no marketplace.json at the root" "VeroPlugins is the only marketplace"
+# Temporary exception (CLAUDE.md, "The temporary marketplace file"): the old marketplace
+# file stays for releases 1.3.1 and 1.3.2, naming this plugin alone, so earlier installs
+# receive the move. Delete the file and this exception together in the release after.
+LEGACY="$ROOT/.claude-plugin/marketplace.json"
+LEGACY_NAME="verodiff-market""place"
+if [ ! -e "$LEGACY" ]; then
+  ok "no marketplace.json at the root"
+elif grep -q "\"name\": \"$LEGACY_NAME\"" "$LEGACY" && [ "$(grep -c '"source":' "$LEGACY")" = 1 ] \
+  && grep -q '"source": "./plugins/vero-diff"' "$LEGACY" && grep -q '"name": "vero-diff"' "$LEGACY"; then
+  ok "the temporary marketplace.json lists vero-diff alone (delete it after 1.3.2)"
+else
+  no "no marketplace.json at the root" "VeroPlugins is the only marketplace; the temporary file may list vero-diff alone"
+fi
 for f in plugins/vero-diff/hooks/source-check.ts plugins/vero-diff/tests/source-check.test.ts; do
   [ -f "$ROOT/$f" ] && ok "present: $f" || no "present: $f" "copy it from VeroPlugins/shared"
 done
 grep -q 'GomelHawk/VeroPlugins' "$ROOT/install.sh" && grep -q 'vero-plugins' "$ROOT/install.sh" \
   && ok "install.sh installs from VeroPlugins" || no "install.sh installs from VeroPlugins"
-# (the pattern is assembled so this script does not name them itself)
+# (the pattern is assembled so this script does not name them itself). The temporary
+# marketplace file and the notes that explain it are the only places allowed to.
 OTHERS="verodiff-market""place|gomelhawk-plug""ins"
-if grep -rqE "$OTHERS" --exclude-dir=.git "$ROOT"; then
-  no "no other marketplace is named" "$(grep -rlE "$OTHERS" --exclude-dir=.git "$ROOT" | head -3 | tr '\n' ' ')"
+NAMED="$(grep -rlE "$OTHERS" --exclude-dir=.git --exclude-dir=.idea "$ROOT" | grep -vx "$LEGACY" | grep -vx "$ROOT/CLAUDE.md" | head -3 | tr '\n' ' ')"
+if [ -n "$NAMED" ]; then
+  no "no other marketplace is named" "$NAMED"
 else
-  ok "no other marketplace is named"
+  ok "no other marketplace is named (outside the temporary file and CLAUDE.md)"
 fi
 
 # claude.ai organization distribution rejects a plugin with a top-level bin/.
